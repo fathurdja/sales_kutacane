@@ -14,6 +14,8 @@ class Printbluetooth extends StatefulWidget {
   final String customerName;
   final String alamat;
   final String idTransaksi;
+  final String status;
+
 
   Printbluetooth({
     required this.orderItems,
@@ -23,6 +25,7 @@ class Printbluetooth extends StatefulWidget {
     required this.customerName,
     required this.alamat,
     required this.idTransaksi,
+    required this.status,
   });
   @override
   _MyAppState createState() => new _MyAppState();
@@ -44,19 +47,6 @@ class _MyAppState extends State<Printbluetooth> {
   }
 
   Future<void> initPlatformState() async {
-    // TODO here add a permission request using permission_handler
-    // if permission is not granted, kzaki's thermal print plugin will ask for location permission
-    // which will invariably crash the app even if user agrees so we'd better ask it upfront
-
-    // var statusLocation = Permission.location;
-    // if (await statusLocation.isGranted != true) {
-    //   await Permission.location.request();
-    // }
-    // if (await statusLocation.isGranted) {
-    // ...
-    // } else {
-    // showDialogSayingThatThisPermissionIsRequired());
-    // }
     bool? isConnected = await bluetooth.isConnected;
     List<BluetoothDevice> devices = [];
     try {
@@ -204,23 +194,42 @@ class _MyAppState extends State<Printbluetooth> {
                   ),
                   onPressed: () {
                     final trx = Transaction(
-                      id: widget.idTransaksi,
+                      id: "",
+                      id_transaksi: widget.idTransaksi,
                       customerName: widget.customerName,
                       date: widget.date,
                       alamat: widget.alamat,
                       total: widget.total.toDouble(),
+                      status: widget.status,
                       items:
                           widget.orderItems.map((item) {
                             return TransactionItem.fromData(
                               name:
-                                  item['product']['name'], // ✅ Ambil dari nested map
+                                  item['items']['name'], // ✅ Ambil dari nested map
                               price:
-                                  (item['product']['harga'] as num)
+                                  (item['items']['harga'] as num)
                                       .toDouble(), // ✅ Pastikan double
-                              quantity: item['quantity'], // ✅ Key-nya quantity
+                              quantity: item['quantity'],
+                              bonus:
+                                  item['items']['bonus'], // ✅ Key-nya quantity
                             );
                           }).toList(),
                     );
+                    print('===== STRUK TRANSAKSI =====');
+                    print('ID: ${trx.id}');
+                    print('Nama: ${trx.customerName}');
+                    print('Alamat: ${trx.alamat}');
+                    print('Tanggal: ${trx.date}');
+                    print('Items:');
+                    for (var item in trx.items) {
+                      print(
+                        '- ${item.name} | Qty: ${item.quantity}|Bonus: ${item.bonus}| Price: ${item.price} | Subtotal: ${item.subtotal}',
+                      );
+                    }
+                    print('PEMBAYARAN: ${trx.status}');
+                    print('TOTAL: ${trx.total}');
+
+                    print('===========================');
 
                     testPrint.printTransaction(trx);
                   },

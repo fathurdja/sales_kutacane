@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/pages/arsip.dart';
+import 'package:kasir_kutacane/pages/dailyreport.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
+import 'package:kasir_kutacane/pages/transactionInputBackup.dart';
 import 'package:kasir_kutacane/pages/transactionlist.dart';
+import 'package:kasir_kutacane/pages/transactionlistBackup.dart';
+import 'package:kasir_kutacane/pages/uploaddatatransaksi.dart';
 
 void main() {
   runApp(const MyApp());
@@ -17,7 +22,13 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   final List<Transaction> _transactions =
       []; // List untuk menyimpan semua transaksi
-  int _selectedIndex = 0; // Indeks halaman yang sedang aktif
+  int _selectedIndex = 0; 
+
+   void changeTab(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+  }
 
   // Callback untuk menerima transaksi dari input page
   void _addTransaction(Transaction transaction) {
@@ -37,8 +48,11 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     // List halaman yang akan ditampilkan
     final List<Widget> _pages = [
-      TransactionInputPage(onSave: _addTransaction),
-      TransactionListPage(),
+      TransactionInputPage(onSave: _addTransaction,onNavigateTab: changeTab),
+      TransactionListPageBackup(),
+      CsvExcelToJsonPage(),
+      ArchivePage(),
+      DailyReportDetailPage(selectedDate: DateTime.now()),
     ];
 
     return MaterialApp(
@@ -61,8 +75,22 @@ class _MyAppState extends State<MyApp> {
               icon: Icon(Icons.list_alt),
               label: 'Daftar Transaksi',
             ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.folder_copy_outlined),
+              label: 'Transaksi Lama',
+            ),
+            BottomNavigationBarItem(
+              icon: Icon(Icons.archive),
+              label: 'Arsip Transaksi',
+            ),
+             BottomNavigationBarItem(
+              icon: Icon(Icons.receipt_long_rounded),
+              label: 'Laporan Harian ',
+            ),
           ],
-          currentIndex: _selectedIndex, // Indeks item yang sedang aktif
+          currentIndex: _selectedIndex,
+          unselectedItemColor:
+              Theme.of(context).primaryColor, // Indeks item yang sedang aktif
           selectedItemColor:
               Theme.of(context).primaryColor, // Warna item yang dipilih
           onTap: _onItemTapped, // Callback saat item di-tap

@@ -7,7 +7,10 @@ class TestPrint {
   final BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
 
   Future<void> printTransaction(Transaction transaction) async {
-    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+    final currencyFormat = NumberFormat.currency(
+      locale: 'id_ID',
+      symbol: 'Rp ',
+    );
 
     final isConnected = await bluetooth.isConnected;
     if (isConnected != true) {
@@ -30,17 +33,25 @@ class TestPrint {
     );
 
     bluetooth.printNewLine();
-    bluetooth.printCustom("STRUK TRANSAKSI", Size.boldLarge.val, Align.center.val);
+    bluetooth.printCustom(
+      "STRUK TRANSAKSI",
+      Size.boldLarge.val,
+      Align.center.val,
+    );
     bluetooth.printNewLine();
 
     // ====== INFORMASI TRANSAKSI ======
-    bluetooth.printLeftRight("ID", transaction.id, Size.medium.val);
+    bluetooth.printLeftRight("ID", transaction.id_transaksi, Size.medium.val);
     bluetooth.printLeftRight(
       "Tanggal",
       DateFormat('dd-MM-yyyy').format(transaction.date),
       Size.medium.val,
     );
-    bluetooth.printLeftRight("Konsumen", transaction.customerName, Size.medium.val);
+    bluetooth.printLeftRight(
+      "Konsumen",
+      transaction.customerName,
+      Size.medium.val,
+    );
     bluetooth.printLeftRight("Alamat", transaction.alamat, Size.medium.val);
 
     bluetooth.printNewLine();
@@ -49,12 +60,18 @@ class TestPrint {
     // ====== ITEMS ======
     for (final item in transaction.items) {
       bluetooth.printLeftRight(
-        "${item.name} x${item.quantity}",
+        "${item.name} x${item.quantity} ${item.bonus}",
         currencyFormat.format(item.subtotal),
         Size.medium.val,
       );
     }
 
+    bluetooth.printNewLine();
+    bluetooth.printLeftRight(
+      "PEMBAYARAN",
+      "${transaction.status}",
+      Size.boldMedium.val,
+    );
     bluetooth.printNewLine();
     bluetooth.printLeftRight(
       "TOTAL",

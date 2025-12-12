@@ -8,9 +8,15 @@ import 'package:kasir_kutacane/models/transactionItem.dart';
 
 class TransactionInputPage extends StatefulWidget {
   final Function(Transaction) onSave;
+  final Transaction? transaction;
+  final Function(int)? onNavigateTab;
 
-  const TransactionInputPage({Key? key, required this.onSave})
-      : super(key: key);
+  const TransactionInputPage({
+    Key? key,
+    required this.onSave,
+    this.transaction,
+    this.onNavigateTab,
+  }) : super(key: key);
 
   @override
   State<TransactionInputPage> createState() => _TransactionInputPageState();
@@ -26,11 +32,31 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
 
   static int _transactionCounter = 0;
   bool _isCheckingId = false;
+  String _paymentStatus = 'LUNAS';
 
   @override
   void initState() {
     super.initState();
-    _generateTransactionId();
+    if (widget.transaction != null) {
+      _transactionId = widget.transaction!.id_transaksi;
+      _customerNameController.text = widget.transaction!.customerName;
+      _alamatCustomer.text = widget.transaction!.alamat;
+      _selectedDate = widget.transaction!.date;
+      _paymentStatus = widget.transaction!.status;
+      _items.clear();
+      for (var item in widget.transaction!.items) {
+        _items.add(
+          TransactionItem.fromData(
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            bonus: item.bonus,
+          ),
+        );
+      }
+    } else {
+      _generateTransactionId();
+    }
   }
 
   @override
@@ -118,27 +144,42 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   Future<void> _saveTransactionToApi(Transaction transaction) async {
-    const url = 'https://6873b63ec75558e273550195.mockapi.io/transaksi';
+    const url = 'http://6873b63ec75558e273550195.mockapi.io/transaksi';
 
+    // 🔹 Jika edit → hapus dulu data lama
+    if (widget.transaction != null) {
+      final deleteUrl = '$url/${widget.transaction!.id}';
+      final deleteRes = await http.delete(Uri.parse(deleteUrl));
+
+      if (deleteRes.statusCode != 200 && deleteRes.statusCode != 204) {
+        throw Exception('Gagal menghapus transaksi lama');
+      }
+    }
+
+    // 🔹 Simpan data baru
     final response = await http.post(
       Uri.parse(url),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
-        'id_transaksi': transaction.id,
+        'id_transaksi':
+            transaction.id_transaksi, // tetap pakai id_transaksi lama
         'customerName': transaction.customerName,
         'alamat': transaction.alamat,
         'date': transaction.date.toIso8601String(),
-        'items': transaction.items
-            .map(
-              (item) => {
-                'name': item.nameController.text,
-                'price': item.price,
-                'quantity': item.quantity,
-                'subtotal': item.subtotal,
-              },
-            )
-            .toList(),
+        'items':
+            transaction.items
+                .map(
+                  (item) => {
+                    'name': item.nameController.text,
+                    'price': item.price,
+                    'quantity': item.quantity,
+                    'bonus': item.bonus,
+                    'subtotal': item.subtotal,
+                  },
+                )
+                .toList(),
         'total': transaction.total,
+        'status': _paymentStatus,
       }),
     );
 
@@ -153,51 +194,62 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     if (_formKey.currentState!.validate()) {
       _formKey.currentState!.save();
 
-      setState(() {
-        _isCheckingId = true;
-      });
+      setState(() => _isCheckingId = true);
 
-      bool exists = await _checkTransactionIdExists(_transactionId);
-      if (exists) {
-        await _generateTransactionId();
+      // 🔹 Kalau tambah baru, pastikan generate ID unik
+      if (widget.transaction == null) {
+        bool exists = await _checkTransactionIdExists(_transactionId);
+        if (exists) {
+          await _generateTransactionId();
+        }
       }
 
       final newTransaction = Transaction(
-        id: _transactionId,
+        id: '', // biarkan kosong, karena MockAPI generate baru
+        id_transaksi: widget.transaction?.id_transaksi ?? _transactionId,
         customerName: _customerNameController.text,
         alamat: _alamatCustomer.text,
         date: _selectedDate,
         items: List.from(_items),
         total: _calculateTotal(),
+        status: _paymentStatus,
       );
 
       try {
         await _saveTransactionToApi(newTransaction);
         widget.onSave(newTransaction);
 
+        widget.onNavigateTab?.call(1);
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Transaksi berhasil disimpan ke API!')),
         );
 
-        _customerNameController.clear();
-        _alamatCustomer.clear();
-        for (final item in _items) {
-          item.dispose();
+        // reset form hanya kalau transaksi baru, bukan edit
+        if (widget.transaction == null) {
+          _customerNameController.clear();
+          _alamatCustomer.clear();
+          for (final item in _items) {
+            item.dispose();
+          }
+          setState(() {
+            _items.clear();
+            _items.add(TransactionItem());
+            _selectedDate = DateTime.now();
+          });
+          await _generateTransactionId();
+        } else {
+          Navigator.pop(
+            context,
+            newTransaction,
+          ); // ✅ kalau edit, langsung balik
         }
-        setState(() {
-          _items.clear();
-          _items.add(TransactionItem());
-          _selectedDate = DateTime.now();
-        });
-        await _generateTransactionId();
       } catch (e) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Gagal simpan ke API: $e')));
       } finally {
-        setState(() {
-          _isCheckingId = false;
-        });
+        setState(() => _isCheckingId = false);
       }
     }
   }
@@ -272,6 +324,26 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                       ),
                     ],
                   ),
+
+                  // const SizedBox(height: 20),
+                  // DropdownButtonFormField<String>(
+                  //   value: _paymentStatus,
+                  //   decoration: const InputDecoration(
+                  //     labelText: 'Status Pembayaran',
+                  //     border: OutlineInputBorder(),
+                  //   ),
+                  //   items: const [
+                  //     DropdownMenuItem(value: 'LUNAS', child: Text('LUNAS')),
+                  //     DropdownMenuItem(value: 'BON', child: Text('BON')),
+                  //   ],
+                  //   onChanged: (value) {
+                  //     if (value != null) {
+                  //       setState(() {
+                  //         _paymentStatus = value;
+                  //       });
+                  //     }
+                  //   },
+                  // ),
                   const SizedBox(height: 20),
                   const Text(
                     'Daftar Barang:',
@@ -353,6 +425,22 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                                   return null;
                                 },
                               ),
+                              TextFormField(
+                                controller: _items[index].bonusController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Bonus',
+                                ),
+                                keyboardType: TextInputType.number,
+                                onChanged: (_) => setState(() {}),
+                                validator: (value) {
+                                  if (value == null) return null;
+                                  if (value.isNotEmpty &&
+                                      int.tryParse(value) == null) {
+                                    return 'Bonus harus angka';
+                                  }
+                                  return null;
+                                },
+                              ),
                               Align(
                                 alignment: Alignment.centerRight,
                                 child: Text(
@@ -391,7 +479,10 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed: _saveTransaction,
+                      onPressed: () async {
+                        await _showPaymentStatusDialog(); // user pilih status dulu
+                        _saveTransaction(); // kemudian simpan
+                      },
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 15),
                         backgroundColor: Theme.of(context).primaryColor,
@@ -414,6 +505,53 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             ),
         ],
       ),
+    );
+  }
+
+  Future<void> _showPaymentStatusDialog() async {
+    String tempStatus = _paymentStatus;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("Pilih Status Pembayaran"),
+          content: StatefulBuilder(
+            builder: (context, setStateDialog) {
+              return DropdownButtonFormField<String>(
+                value: tempStatus,
+                items: const [
+                  DropdownMenuItem(value: 'LUNAS', child: Text('LUNAS')),
+                  DropdownMenuItem(value: 'BON', child: Text('BON')),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setStateDialog(() {
+                      tempStatus = value;
+                    });
+                  }
+                },
+              );
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Batal"),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                setState(() {
+                  _paymentStatus = tempStatus; // hanya dari popup!
+                });
+                Navigator.pop(context);
+              },
+              child: const Text("OK"),
+            ),
+          ],
+        );
+      },
     );
   }
 }

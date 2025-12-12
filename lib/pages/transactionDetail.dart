@@ -1,11 +1,17 @@
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
-import 'package:printing/printing.dart';
+
 import 'package:pdf/widgets.dart' as pw;
+import 'package:share_plus/share_plus.dart';
 
 class TransactionDetailPage extends StatelessWidget {
   final Transaction transaction;
@@ -57,15 +63,23 @@ class TransactionDetailPage extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Expanded(child: Text('${item.name}')),
-                    Text(
-                      '${item.quantity} x ${currencyFormat.format(item.price)}',
-                    ),
+                    Text('Qty: ${item.quantity} Bonus: ${item.bonus} |  '),
                     Text(currencyFormat.format(item.subtotal)),
                   ],
                 ),
               ),
             ),
             const Divider(thickness: 1.0),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                'Pembayaran: ${transaction.status}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+            ),
             Align(
               alignment: Alignment.centerRight,
               child: Text(
@@ -88,12 +102,14 @@ class TransactionDetailPage extends StatelessWidget {
                         MaterialPageRoute(
                           builder:
                               (context) => Printbluetooth(
+                
                                 orderItems:
                                     transaction.items.map((item) {
                                       return {
-                                        'product': {
+                                        'items': {
                                           'name': item.name,
                                           'harga': item.price,
+                                          'bonus': item.bonus,
                                         },
                                         'quantity': item.quantity,
                                       };
@@ -102,8 +118,9 @@ class TransactionDetailPage extends StatelessWidget {
                                 total: transaction.total.toInt(),
                                 customerName: transaction.customerName,
                                 alamat: transaction.alamat,
-                                idTransaksi: transaction.id,
+                                idTransaksi: transaction.id_transaksi,
                                 date: transaction.date,
+                                status: transaction.status,
                               ),
                         ),
                       );
@@ -118,8 +135,20 @@ class TransactionDetailPage extends StatelessWidget {
                     icon: const Icon(Icons.picture_as_pdf),
                     onPressed: () async {
                       final pdf = await generatePdf(transaction);
-                      await Printing.layoutPdf(
-                        onLayout: (PdfPageFormat format) async => pdf.save(),
+                      final String fileName =
+                          '${transaction.customerName}_${DateFormat('yyyyMMdd').format(transaction.date)}.pdf'
+                              .replaceAll(' ', '_'); // Hindari spasi di nama file
+
+                      // Simpan ke temporary directory
+                      final output = await getTemporaryDirectory();
+                      final file = File('${output.path}/$fileName');
+                      await file.writeAsBytes(await pdf.save());
+
+                      // Share ke WhatsApp (via share sheet)
+                      await Share.shareXFiles(
+                        [XFile(file.path)],
+                        text:
+                            'Berikut struk transaksi untuk ${transaction.customerName}',
                       );
                     },
                     label: const Text('Unduh PDF'),
@@ -139,6 +168,14 @@ class TransactionDetailPage extends StatelessWidget {
       locale: 'id_ID',
       symbol: 'Rp ',
     );
+
+   
+    final ByteData bytes = await rootBundle.load(
+      'assets/images/stempelfixxxxx.png',
+    );
+    final Uint8List byteList = bytes.buffer.asUint8List();
+
+    final image = pw.MemoryImage(byteList);
 
     pdf.addPage(
       pw.Page(
@@ -195,6 +232,13 @@ class TransactionDetailPage extends StatelessWidget {
                           ),
                         ),
                         pw.Expanded(
+                          flex: 2,
+                          child: pw.Text(
+                            'Bonus',
+                            style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                          ),
+                        ),
+                        pw.Expanded(
                           flex: 3,
                           child: pw.Text(
                             'Harga',
@@ -224,6 +268,7 @@ class TransactionDetailPage extends StatelessWidget {
                             flex: 2,
                             child: pw.Text('${item.quantity}'),
                           ),
+                          pw.Expanded(flex: 2, child: pw.Text('${item.bonus}')),
                           pw.Expanded(
                             flex: 3,
                             child: pw.Text(currencyFormat.format(item.price)),
@@ -245,6 +290,17 @@ class TransactionDetailPage extends StatelessWidget {
               pw.Align(
                 alignment: pw.Alignment.centerRight,
                 child: pw.Text(
+                  'PEMBAYARAN: ${transaction.status}',
+                  style: pw.TextStyle(
+                    fontSize: 13,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+              ),
+               pw.SizedBox(height: 15),
+              pw.Align(
+                alignment: pw.Alignment.centerRight,
+                child: pw.Text(
                   'TOTAL: ${currencyFormat.format(transaction.total)}',
                   style: pw.TextStyle(
                     fontSize: 14,
@@ -252,7 +308,11 @@ class TransactionDetailPage extends StatelessWidget {
                   ),
                 ),
               ),
-              pw.SizedBox(height: 30),
+              pw.Align(
+                alignment: pw.Alignment.centerRight,
+                child: pw.Image(image, width: 100),
+              ),
+              pw.SizedBox(height: 15),
               pw.Align(
                 alignment: pw.Alignment.center,
                 child: pw.Text(
