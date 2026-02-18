@@ -34,7 +34,7 @@ class _TransactionListPageBackupState extends State<TransactionListPageBackup> {
   }
 
   Future<void> _fetchTransactions() async {
-    const url = 'http://6873b63ec75558e273550195.mockapi.io/transaksi';
+    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
 
     try {
       final response = await http.get(Uri.parse(url));
@@ -45,11 +45,11 @@ class _TransactionListPageBackupState extends State<TransactionListPageBackup> {
         final loadedTransactions =
             data.map<Transaction>((json) {
               return Transaction(
-                id: json['id'],
-                id_transaksi: json['id_transaksi'],
-                customerName: json['customerName'],
-                alamat: json['alamat'],
-                date: safeParseDate(json['date']),
+                id: json['id']?.toString() ?? '',
+                id_transaksi: json['id_transaksi'] ?? '',
+                customerName: json['customer_name'] ?? '',
+                alamat: json['alamat'] ?? '',
+                date: DateTime.parse(json['tanggal']),
                 total: (json['total'] as num).toDouble(),
                 status: json['status'] ?? '-',
                 items:

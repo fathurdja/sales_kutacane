@@ -29,6 +29,7 @@ class TransactionItem {
   double get subtotal => price * quantity;
   int get bonus => int.tryParse(bonusController.text) ?? 0;
   Item? selectedItem;
+  String? tyunit;
 
   void dispose() {
     nameController.dispose();
@@ -39,8 +40,8 @@ class TransactionItem {
 
   factory TransactionItem.fromJson(Map<String, dynamic> json) {
     return TransactionItem.fromData(
-      name: json['name'],
-      price: (json['price'] as num).toDouble(),
+      name: json['nama_barang'],
+      price: (json['harga'] as num).toDouble(),
       quantity: json['quantity'] as int,
       bonus: json['bonus'] as int,
     );

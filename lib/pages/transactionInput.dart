@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/models/Item.dart';
+import 'package:kasir_kutacane/models/master.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TransactionInputPage extends StatefulWidget {
   final Function(Transaction) onSave;
@@ -29,6 +32,8 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   final List<TransactionItem> _items = [TransactionItem()];
   DateTime _selectedDate = DateTime.now();
   String _transactionId = '';
+  List<Item> _products = [];
+  bool _isLoadingProducts = false;
 
   static int _transactionCounter = 0;
   bool _isCheckingId = false;
@@ -37,6 +42,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   @override
   void initState() {
     super.initState();
+    _fetchProducts();
     if (widget.transaction != null) {
       _transactionId = widget.transaction!.id_transaksi;
       _customerNameController.text = widget.transaction!.customerName;
@@ -90,8 +96,31 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     });
   }
 
+  Future<void> _fetchProducts() async {
+    const url = 'https://laravel.fathurrzqn8n.web.id/api/master-stocks';
+
+    setState(() => _isLoadingProducts = true);
+
+    try {
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        final List data = body['data'];
+
+        setState(() {
+          _products = data.map<Item>((e) => Item.fromJson(e)).toList();
+        });
+      }
+    } catch (e) {
+      debugPrint("Error ambil produk: $e");
+    } finally {
+      setState(() => _isLoadingProducts = false);
+    }
+  }
+
   Future<bool> _checkTransactionIdExists(String id) async {
-    const apiUrl = 'https://6873b63ec75558e273550195.mockapi.io/transaksi';
+    const apiUrl = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
     setState(() {
       _isCheckingId = true;
     });
@@ -110,6 +139,60 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       });
     }
     return false;
+  }
+
+  Future<void> _saveToSupabase(Transaction transaction) async {
+    final supabase = Supabase.instance.client;
+
+    try {
+      // 1. Simpan Header Transaksi
+      await supabase.from('transaksi').insert({
+        'id_transaksi': transaction.id_transaksi,
+        'customer_name':
+            transaction.customerName, // Pastikan nama kolom sama dengan di DB
+        'alamat': transaction.alamat,
+        'tanggal':
+            transaction.date
+                .toIso8601String(), // Pastikan nama kolom sama dengan di DB
+        'total': transaction.total.toInt(),
+        'status': _paymentStatus,
+        'is_backup': true,
+      });
+
+      // 2. Simpan Items
+      final itemsJson =
+          transaction.items
+              .map(
+                (item) => {
+                  'id_transaksi': transaction.id_transaksi,
+                  'tyunit':
+                      item.tyunit, // WAJIB ADA karena Foreign Key ke tabel munit
+                  'nama_barang': item.nameController.text,
+                  'harga': item.price.toInt(),
+                  'quantity': item.quantity,
+                  'bonus': item.bonus,
+                  'subtotal': item.subtotal.toInt(),
+                },
+              )
+              .toList();
+
+      await supabase.from('transaksi_items').insert(itemsJson);
+    } on PostgrestException catch (error) {
+      // Ini akan menangkap error spesifik dari database Supabase (PostgreSQL)
+      debugPrint("=== SUPABASE DATABASE ERROR ===");
+      debugPrint("Message: ${error.message}"); // Pesan error manusiawi
+      debugPrint(
+        "Code: ${error.code}",
+      ); // Kode error (misal: 23503 untuk FK error)
+      debugPrint("Details: ${error.details}"); // Detail teknis
+      debugPrint("Hint: ${error.hint}"); // Saran perbaikan dari DB
+      rethrow; // Tetap lempar agar fungsi pemanggil tahu kalau gagal
+    } catch (e) {
+      // Menangkap error umum (koneksi internet, dll)
+      debugPrint("=== UNKNOWN ERROR ===");
+      debugPrint(e.toString());
+      rethrow;
+    }
   }
 
   Future<void> _selectDate(BuildContext context) async {
@@ -144,50 +227,58 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   Future<void> _saveTransactionToApi(Transaction transaction) async {
-    const url = 'http://6873b63ec75558e273550195.mockapi.io/transaksi';
+    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
 
-    // 🔹 Jika edit → hapus dulu data lama
-    if (widget.transaction != null) {
-      final deleteUrl = '$url/${widget.transaction!.id}';
-      final deleteRes = await http.delete(Uri.parse(deleteUrl));
+    try {
+      final response = await http.post(
+        Uri.parse(url),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
 
-      if (deleteRes.statusCode != 200 && deleteRes.statusCode != 204) {
-        throw Exception('Gagal menghapus transaksi lama');
+        body: jsonEncode({
+          'id_transaksi':
+              transaction.id_transaksi, // tetap pakai id_transaksi lama
+          'customerName': transaction.customerName,
+          'alamat': transaction.alamat,
+          'date': transaction.date.toIso8601String(),
+          'total': transaction.total,
+          'status': _paymentStatus,
+          'items':
+              transaction.items
+                  .map(
+                    (item) => {
+                      'tyunit': item.tyunit, // tambahkan ini
+                      'name': item.nameController.text,
+                      'price': item.price,
+                      'quantity': item.quantity,
+                      'bonus': item.bonus,
+                      'subtotal': item.subtotal,
+                    },
+                  )
+                  .toList(),
+        }),
+      );
+
+      if (response.statusCode != 200 && response.statusCode != 201) {
+        print(response.body);
+        throw Exception(
+          'Gagal menyimpan transaksi ke API. Code: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      debugPrint("Laravel Gagal, mencoba backup ke Supabase: $e");
+
+      try {
+        await _saveToSupabase(transaction);
+        debugPrint("Berhasil simpan ke Supabase (Backup Mode)");
+      } catch (supabaseError) {
+        throw Exception('Semua server (Utama & Backup) tidak dapat dijangkau.');
       }
     }
 
     // 🔹 Simpan data baru
-    final response = await http.post(
-      Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'id_transaksi':
-            transaction.id_transaksi, // tetap pakai id_transaksi lama
-        'customerName': transaction.customerName,
-        'alamat': transaction.alamat,
-        'date': transaction.date.toIso8601String(),
-        'items':
-            transaction.items
-                .map(
-                  (item) => {
-                    'name': item.nameController.text,
-                    'price': item.price,
-                    'quantity': item.quantity,
-                    'bonus': item.bonus,
-                    'subtotal': item.subtotal,
-                  },
-                )
-                .toList(),
-        'total': transaction.total,
-        'status': _paymentStatus,
-      }),
-    );
-
-    if (response.statusCode != 200 && response.statusCode != 201) {
-      throw Exception(
-        'Gagal menyimpan transaksi ke API. Code: ${response.statusCode}',
-      );
-    }
   }
 
   void _saveTransaction() async {
@@ -239,10 +330,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
           });
           await _generateTransactionId();
         } else {
-          Navigator.pop(
-            context,
-            newTransaction,
-          ); // ✅ kalau edit, langsung balik
+          Navigator.pop(context, newTransaction);
         }
       } catch (e) {
         ScaffoldMessenger.of(
@@ -381,34 +469,43 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                                     ),
                                 ],
                               ),
-                              TextFormField(
-                                controller: _items[index].nameController,
+                              DropdownButtonFormField<Item>(
+                                value: _items[index].selectedItem,
                                 decoration: const InputDecoration(
                                   labelText: 'Nama Barang',
                                 ),
-                                validator: (value) {
-                                  if (value == null || value.isEmpty) {
-                                    return 'Nama barang tidak boleh kosong';
-                                  }
-                                  return null;
+                                items:
+                                    _products.map((product) {
+                                      return DropdownMenuItem<Item>(
+                                        value: product,
+                                        child: Text(product.name),
+                                      );
+                                    }).toList(),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _items[index].selectedItem = value;
+                                    _items[index].nameController.text =
+                                        value?.name ?? '';
+                                    _items[index].priceController.text =
+                                        value?.price.toString() ?? '0';
+                                    _items[index].tyunit = value?.tyunit ?? '';
+                                  });
                                 },
+                                validator:
+                                    (value) =>
+                                        value == null
+                                            ? 'Pilih barang dulu'
+                                            : null,
                               ),
+
                               TextFormField(
                                 controller: _items[index].priceController,
                                 decoration: const InputDecoration(
                                   labelText: 'Harga Satuan',
                                 ),
-                                keyboardType: TextInputType.number,
-                                onChanged: (_) => setState(() {}),
-                                validator: (value) {
-                                  if (value == null ||
-                                      double.tryParse(value) == null ||
-                                      double.parse(value) <= 0) {
-                                    return 'Harga harus angka positif';
-                                  }
-                                  return null;
-                                },
+                                readOnly: true,
                               ),
+
                               TextFormField(
                                 controller: _items[index].qtyController,
                                 decoration: const InputDecoration(

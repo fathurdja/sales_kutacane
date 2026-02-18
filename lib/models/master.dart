@@ -1,20 +1,19 @@
-class Item {
+class Product {
   final String tyunit;
   final String name;
   final double price;
 
-  Item({
+  Product({
     required this.tyunit,
     required this.name,
     required this.price,
   });
 
-  factory Item.fromJson(Map<String, dynamic> json) {
-    return Item(
+  factory Product.fromJson(Map<String, dynamic> json) {
+    return Product(
       tyunit: json['TYUNIT'] ?? '',
       name: json['NTYUNIT'] ?? '',
       price: (json['hjual'] as num).toDouble(),
     );
   }
 }
-

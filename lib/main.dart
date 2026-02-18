@@ -3,13 +3,18 @@ import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/arsip.dart';
 import 'package:kasir_kutacane/pages/dailyreport.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
-import 'package:kasir_kutacane/pages/transactionInputBackup.dart';
-import 'package:kasir_kutacane/pages/transactionlist.dart';
+// import 'package:kasir_kutacane/pages/transactionInputBackup.dart';
+// import 'package:kasir_kutacane/pages/transactionlist.dart';
 import 'package:kasir_kutacane/pages/transactionlistBackup.dart';
 import 'package:kasir_kutacane/pages/uploaddatatransaksi.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
-  runApp(const MyApp());
+Future<void> main() async {
+  await Supabase.initialize(
+    url: 'https://louzejtmywrwwdsxkuqb.supabase.co',
+    anonKey: 'sb_publishable_UuumrgOaVGxuhGUcII3R3Q_SJzr7wY0',
+  );
+  runApp(MyApp());
 }
 
 class MyApp extends StatefulWidget {
@@ -22,9 +27,9 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   final List<Transaction> _transactions =
       []; // List untuk menyimpan semua transaksi
-  int _selectedIndex = 0; 
+  int _selectedIndex = 0;
 
-   void changeTab(int index) {
+  void changeTab(int index) {
     setState(() {
       _selectedIndex = index;
     });
@@ -48,7 +53,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     // List halaman yang akan ditampilkan
     final List<Widget> _pages = [
-      TransactionInputPage(onSave: _addTransaction,onNavigateTab: changeTab),
+      TransactionInputPage(onSave: _addTransaction, onNavigateTab: changeTab),
       TransactionListPageBackup(),
       CsvExcelToJsonPage(),
       ArchivePage(),
@@ -83,7 +88,7 @@ class _MyAppState extends State<MyApp> {
               icon: Icon(Icons.archive),
               label: 'Arsip Transaksi',
             ),
-             BottomNavigationBarItem(
+            BottomNavigationBarItem(
               icon: Icon(Icons.receipt_long_rounded),
               label: 'Laporan Harian ',
             ),
