@@ -8,20 +8,25 @@ class TransactionItem {
   final TextEditingController bonusController;
 
   TransactionItem()
-    : nameController = TextEditingController(),
-      priceController = TextEditingController(),
-      qtyController = TextEditingController(),
-      bonusController = TextEditingController();
+      : nameController = TextEditingController(),
+        priceController = TextEditingController(),
+        qtyController = TextEditingController(),
+        bonusController = TextEditingController();
 
   TransactionItem.fromData({
     required String name,
     required double price,
     required int quantity,
     required int bonus,
-  }) : nameController = TextEditingController(text: name),
-       priceController = TextEditingController(text: price.toString()),
-       qtyController = TextEditingController(text: quantity.toString()),
-       bonusController = TextEditingController(text: bonus.toString());
+    this.tyunit,
+  })  : nameController = TextEditingController(text: name),
+        priceController = TextEditingController(
+          text: price.truncateToDouble() == price
+              ? price.toInt().toString()
+              : price.toStringAsFixed(2),
+        ),
+        qtyController = TextEditingController(text: quantity.toString()),
+        bonusController = TextEditingController(text: bonus.toString());
 
   String get name => nameController.text;
   double get price => double.tryParse(priceController.text) ?? 0.0;
@@ -39,11 +44,43 @@ class TransactionItem {
   }
 
   factory TransactionItem.fromJson(Map<String, dynamic> json) {
+    final rawPrice = json['harga'] ?? json['price'];
+    final double parsedPrice = (rawPrice is num)
+        ? rawPrice.toDouble()
+        : (double.tryParse(rawPrice?.toString() ?? '0') ?? 0.0);
+
+    final rawQty = json['quantity'] ?? json['qty'];
+    final int parsedQty = (rawQty is num)
+        ? rawQty.toInt()
+        : (int.tryParse(rawQty?.toString() ?? '0') ?? 0);
+
+    final rawBonus = json['bonus'];
+    final int parsedBonus = (rawBonus is num)
+        ? rawBonus.toInt()
+        : (int.tryParse(rawBonus?.toString() ?? '0') ?? 0);
+
+    final String name = json['nama_barang']?.toString() ??
+        json['name']?.toString() ??
+        '';
+    final String? tyunit = json['tyunit']?.toString();
+
     return TransactionItem.fromData(
-      name: json['nama_barang'],
-      price: (json['harga'] as num).toDouble(),
-      quantity: json['quantity'] as int,
-      bonus: json['bonus'] as int,
+      name: name,
+      price: parsedPrice,
+      quantity: parsedQty,
+      bonus: parsedBonus,
+      tyunit: tyunit,
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'tyunit': tyunit ?? '',
+      'price': price.truncateToDouble() == price ? price.toInt() : price,
+      'quantity': quantity,
+      'bonus': bonus,
+      'subtotal':
+          subtotal.truncateToDouble() == subtotal ? subtotal.toInt() : subtotal,
+    };
   }
 }

@@ -1,35 +1,55 @@
 import 'package:flutter/material.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
-import 'package:kasir_kutacane/pages/arsip.dart';
 import 'package:kasir_kutacane/pages/dailyreport.dart';
+import 'package:kasir_kutacane/pages/home_page.dart';
+import 'package:kasir_kutacane/pages/more_page.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
-// import 'package:kasir_kutacane/pages/transactionInputBackup.dart';
-// import 'package:kasir_kutacane/pages/transactionlist.dart';
 import 'package:kasir_kutacane/pages/transactionlistBackup.dart';
-import 'package:kasir_kutacane/pages/uploaddatatransaksi.dart';
+import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('id_ID', null);
   await Supabase.initialize(
     url: 'https://louzejtmywrwwdsxkuqb.supabase.co',
     anonKey: 'sb_publishable_UuumrgOaVGxuhGUcII3R3Q_SJzr7wY0',
   );
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
-class MyApp extends StatefulWidget {
-  const MyApp({Key? key}) : super(key: key);
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
-  State<MyApp> createState() => _MyAppState();
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      navigatorKey: rootNavigatorKey,
+      debugShowCheckedModeBanner: false,
+      title: 'Sales Kencana v2',
+      theme: AppTheme.lightTheme,
+      home: const MainNavigationScreen(),
+    );
+  }
 }
 
-class _MyAppState extends State<MyApp> {
-  final List<Transaction> _transactions =
-      []; // List untuk menyimpan semua transaksi
-  int _selectedIndex = 0;
+class MainNavigationScreen extends StatefulWidget {
+  const MainNavigationScreen({super.key});
 
-  void changeTab(int index) {
+  @override
+  State<MainNavigationScreen> createState() => _MainNavigationScreenState();
+}
+
+class _MainNavigationScreenState extends State<MainNavigationScreen> {
+  int _selectedIndex = 0;
+  final GlobalKey<HomePageState> _homeKey = GlobalKey<HomePageState>();
+  final GlobalKey<TransactionListPageBackupState> _transactionListKey =
+      GlobalKey<TransactionListPageBackupState>();
+
+  void _changeTab(int index) {
     setState(() {
       _selectedIndex = index;
     });
@@ -37,68 +57,151 @@ class _MyAppState extends State<MyApp> {
 
   // Callback untuk menerima transaksi dari input page
   void _addTransaction(Transaction transaction) {
+    // Navigasi kembali ke tab Transaksi (index 1) setelah simpan
     setState(() {
-      _transactions.add(transaction);
+      _selectedIndex = 1;
     });
+    _homeKey.currentState?.fetchTodayTransactions();
+    _transactionListKey.currentState?.fetchTransactions();
   }
 
-  // Fungsi untuk mengubah indeks saat BottomNavigationBar di-tap
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+  // Buka halaman Input Nota Baru
+  Future<void> _openNewTransaction() async {
+    final newTrx = await Navigator.of(context).push<Transaction>(
+      MaterialPageRoute(
+        builder: (_) => TransactionInputPage(
+          onSave: _addTransaction,
+          onNavigateTab: _changeTab,
+        ),
+      ),
+    );
+
+    _homeKey.currentState?.fetchTodayTransactions();
+    _transactionListKey.currentState?.fetchTransactions();
+
+    if (newTrx != null) {
+      _addTransaction(newTrx);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // List halaman yang akan ditampilkan
-    final List<Widget> _pages = [
-      TransactionInputPage(onSave: _addTransaction, onNavigateTab: changeTab),
-      TransactionListPageBackup(),
-      CsvExcelToJsonPage(),
-      ArchivePage(),
+    // List halaman yang ditampilkan — sesuai Design Brief Section 7
+    final List<Widget> pages = [
+      HomePage(key: _homeKey, onCreateNota: _openNewTransaction),
+      TransactionListPageBackup(
+        key: _transactionListKey,
+        onCreateNota: _openNewTransaction,
+      ),
+      const SizedBox(), // placeholder untuk FAB tengah
       DailyReportDetailPage(selectedDate: DateTime.now()),
+      const MorePage(),
     ];
 
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Aplikasi Sales',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
+    return Scaffold(
+      body: IndexedStack(
+        index: _selectedIndex == 2 ? 0 : _selectedIndex,
+        children: pages,
       ),
-      home: Scaffold(
-        body:
-            _pages[_selectedIndex], // Menampilkan halaman sesuai indeks yang dipilih
-        bottomNavigationBar: BottomNavigationBar(
-          items: const <BottomNavigationBarItem>[
-            BottomNavigationBarItem(
-              icon: Icon(Icons.add_shopping_cart),
-              label: 'Input Transaksi',
+      floatingActionButton: FloatingActionButton(
+        onPressed: _openNewTransaction,
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        elevation: 4,
+        shape: const CircleBorder(),
+        child: const Icon(Icons.add, size: 28),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: _buildBottomBar(),
+    );
+  }
+
+  Widget _buildBottomBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _navItem(
+                icon: Icons.home_outlined,
+                activeIcon: Icons.home,
+                label: 'Beranda',
+                index: 0,
+              ),
+              _navItem(
+                icon: Icons.receipt_long_outlined,
+                activeIcon: Icons.receipt_long,
+                label: 'Transaksi',
+                index: 1,
+              ),
+              // Spasi untuk FAB
+              const SizedBox(width: 56),
+              _navItem(
+                icon: Icons.bar_chart_outlined,
+                activeIcon: Icons.bar_chart,
+                label: 'Laporan',
+                index: 3,
+              ),
+              _navItem(
+                icon: Icons.more_horiz_outlined,
+                activeIcon: Icons.more_horiz,
+                label: 'Lainnya',
+                index: 4,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _navItem({
+    required IconData icon,
+    required IconData activeIcon,
+    required String label,
+    required int index,
+  }) {
+    final isActive = _selectedIndex == index;
+    return Expanded(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _changeTab(index),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: Icon(
+                isActive ? activeIcon : icon,
+                key: ValueKey('$index-$isActive'),
+                size: 24,
+                color:
+                    isActive ? AppColors.primary : AppColors.textSecondary,
+              ),
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.list_alt),
-              label: 'Daftar Transaksi',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.folder_copy_outlined),
-              label: 'Transaksi Lama',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.archive),
-              label: 'Arsip Transaksi',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.receipt_long_rounded),
-              label: 'Laporan Harian ',
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
+                color:
+                    isActive ? AppColors.primary : AppColors.textSecondary,
+              ),
             ),
           ],
-          currentIndex: _selectedIndex,
-          unselectedItemColor:
-              Theme.of(context).primaryColor, // Indeks item yang sedang aktif
-          selectedItemColor:
-              Theme.of(context).primaryColor, // Warna item yang dipilih
-          onTap: _onItemTapped, // Callback saat item di-tap
         ),
       ),
     );

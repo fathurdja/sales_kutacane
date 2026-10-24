@@ -4,10 +4,20 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/Item.dart';
-import 'package:kasir_kutacane/models/master.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
+import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
+import 'package:kasir_kutacane/services/printerBluetooth.dart';
+import 'package:kasir_kutacane/theme/app_theme.dart';
+import 'package:kasir_kutacane/widgets/app_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+enum SaveDestination {
+  primaryServer,
+  supabaseBackup,
+  offlineLocal,
+}
 
 class TransactionInputPage extends StatefulWidget {
   final Function(Transaction) onSave;
@@ -15,11 +25,11 @@ class TransactionInputPage extends StatefulWidget {
   final Function(int)? onNavigateTab;
 
   const TransactionInputPage({
-    Key? key,
+    super.key,
     required this.onSave,
     this.transaction,
     this.onNavigateTab,
-  }) : super(key: key);
+  });
 
   @override
   State<TransactionInputPage> createState() => _TransactionInputPageState();
@@ -30,14 +40,15 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   final TextEditingController _customerNameController = TextEditingController();
   final TextEditingController _alamatCustomer = TextEditingController();
   final List<TransactionItem> _items = [TransactionItem()];
+
   DateTime _selectedDate = DateTime.now();
   String _transactionId = '';
   List<Item> _products = [];
   bool _isLoadingProducts = false;
+  bool _isSaving = false;
+  String _paymentStatus = 'LUNAS';
 
   static int _transactionCounter = 0;
-  bool _isCheckingId = false;
-  String _paymentStatus = 'LUNAS';
 
   @override
   void initState() {
@@ -57,6 +68,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             price: item.price,
             quantity: item.quantity,
             bonus: item.bonus,
+            tyunit: item.tyunit,
           ),
         );
       }
@@ -87,111 +99,288 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       _transactionCounter++;
       final uniqueNumber = _transactionCounter.toString().padLeft(4, '0');
       newId = 'Trx-$datePart-$uniqueNumber';
-
       exists = await _checkTransactionIdExists(newId);
     } while (exists);
 
+    if (!mounted) return;
     setState(() {
       _transactionId = newId;
     });
   }
 
   Future<void> _fetchProducts() async {
-    const url = 'https://laravel.fathurrzqn8n.web.id/api/master-stocks';
-
     setState(() => _isLoadingProducts = true);
 
     try {
-      final response = await http.get(Uri.parse(url));
+      // 1. Ambil master-stocks (untuk list unit produk)
+      const msUrl = 'https://laravel.fathurrzqn8n.web.id/api/master-stocks';
+      final msRes = await http
+          .get(Uri.parse(msUrl), headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 6));
 
-      if (response.statusCode == 200) {
-        final body = jsonDecode(response.body);
-        final List data = body['data'];
+      // 2. Ambil products (untuk data stok produk aktif)
+      const prodUrl = 'https://laravel.fathurrzqn8n.web.id/api/products';
+      final prodRes = await http
+          .get(Uri.parse(prodUrl), headers: {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 6));
 
-        setState(() {
-          _products = data.map<Item>((e) => Item.fromJson(e)).toList();
-        });
+      Map<String, int> stockFromProducts = {};
+      if (prodRes.statusCode == 200) {
+        final List<dynamic> prodData = jsonDecode(prodRes.body);
+        for (var p in prodData) {
+          final id = (p['id'] as num?)?.toInt() ?? 0;
+          final tyunit = 'BV${id.toString().padLeft(2, '0')}';
+          final stock = (p['stock'] as num?)?.toInt() ?? 0;
+          stockFromProducts[tyunit] = stock;
+        }
+      }
+
+      if (msRes.statusCode == 200) {
+        final body = jsonDecode(msRes.body);
+        List data = [];
+        if (body is Map && body.containsKey('data')) {
+          data = body['data'];
+        } else if (body is List) {
+          data = body;
+        }
+
+        final items = data.map<Item>((e) {
+          final item = Item.fromJson(e);
+          final activeStock = stockFromProducts[item.tyunit] ?? item.stock;
+          return Item(
+            tyunit: item.tyunit,
+            name: item.name,
+            price: item.price,
+            stock: activeStock,
+          );
+        }).toList();
+
+        if (items.isNotEmpty) {
+          await OfflineSyncService.cacheProducts(items);
+          if (!mounted) return;
+          setState(() {
+            _products = items;
+            _isLoadingProducts = false;
+          });
+          return;
+        }
       }
     } catch (e) {
-      debugPrint("Error ambil produk: $e");
+      debugPrint("Koneksi server gagal/offline, memuat cache produk lokal: $e");
     } finally {
-      setState(() => _isLoadingProducts = false);
+      if (mounted) {
+        setState(() => _isLoadingProducts = false);
+      }
+    }
+
+    // Jika server sedang offline / downtime, gunakan cache lokal HP
+    final cached = await OfflineSyncService.getCachedProducts();
+    if (mounted) {
+      setState(() {
+        _products = cached;
+        _isLoadingProducts = false;
+      });
     }
   }
 
-  Future<bool> _checkTransactionIdExists(String id) async {
-    const apiUrl = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
-    setState(() {
-      _isCheckingId = true;
-    });
+  String _resolveTyunit(TransactionItem item) {
+    if (item.tyunit != null && item.tyunit!.trim().isNotEmpty) {
+      return item.tyunit!.trim();
+    }
+    final itemName = item.nameController.text.trim().toLowerCase();
+    final match = _products.firstWhere(
+      (p) => p.name.trim().toLowerCase() == itemName,
+      orElse: () => Item(tyunit: '', name: '', price: 0),
+    );
+    if (match.tyunit.isNotEmpty) return match.tyunit;
+    return _products.isNotEmpty ? _products.first.tyunit : 'BV01';
+  }
 
+  Future<bool> _checkTransactionIdExists(String id) async {
+    // 1. Cek dari antrean transaksi lokal HP
     try {
-      final response = await http.get(Uri.parse('$apiUrl?search=$id'));
+      final pending = await OfflineSyncService.getPendingTransactions();
+      if (pending.any((trx) => trx.id_transaksi == id)) {
+        return true;
+      }
+    } catch (_) {}
+
+    // 2. Cek ke server utama jika sedang terkoneksi
+    const apiUrl = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    try {
+      final response = await http
+          .get(
+            Uri.parse('$apiUrl?search=$id'),
+            headers: {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 3));
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         return data.any((trx) => trx['id_transaksi'] == id);
       }
     } catch (e) {
-      debugPrint('Error checking ID: $e');
-    } finally {
-      setState(() {
-        _isCheckingId = false;
-      });
+      debugPrint('Error checking ID (offline mode): $e');
     }
     return false;
   }
 
   Future<void> _saveToSupabase(Transaction transaction) async {
     final supabase = Supabase.instance.client;
+    await supabase.from('transaksi').insert({
+      'id_transaksi': transaction.id_transaksi,
+      'customer_name': transaction.customerName,
+      'alamat': transaction.alamat,
+      'tanggal': transaction.date.toIso8601String(),
+      'total': transaction.total.toInt(),
+      'status': _paymentStatus,
+      'is_backup': true,
+    });
 
+    final itemsJson = transaction.items
+        .map(
+          (item) => {
+            'id_transaksi': transaction.id_transaksi,
+            'tyunit': _resolveTyunit(item),
+            'nama_barang': item.nameController.text,
+            'harga': item.price.toInt(),
+            'quantity': item.quantity,
+            'bonus': item.bonus,
+            'subtotal': item.subtotal.toInt(),
+          },
+        )
+        .toList();
+
+    await supabase.from('transaksi_items').insert(itemsJson);
+  }
+
+  Future<SaveDestination> _saveTransactionToApi(Transaction transaction) async {
+    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+
+    final formattedDate =
+        DateFormat('yyyy-MM-dd HH:mm:ss').format(transaction.date);
+
+    final payload = {
+      'id_transaksi': transaction.id_transaksi,
+      'customerName': transaction.customerName,
+      'alamat': transaction.alamat,
+      'date': formattedDate,
+      'total': transaction.total.truncateToDouble() == transaction.total
+          ? transaction.total.toInt()
+          : transaction.total,
+      'status': _paymentStatus,
+      'items': transaction.items.map((item) {
+        final tyunit = _resolveTyunit(item);
+        final price = item.price.truncateToDouble() == item.price
+            ? item.price.toInt()
+            : item.price;
+        final subtotal = item.subtotal.truncateToDouble() == item.subtotal
+            ? item.subtotal.toInt()
+            : item.subtotal;
+        return {
+          'tyunit': tyunit,
+          'price': price,
+          'quantity': item.quantity,
+          'bonus': item.bonus,
+          'subtotal': subtotal,
+        };
+      }).toList(),
+    };
+
+    // 1. Coba kirim langsung ke Server Utama (Laravel)
     try {
-      // 1. Simpan Header Transaksi
-      await supabase.from('transaksi').insert({
-        'id_transaksi': transaction.id_transaksi,
-        'customer_name':
-            transaction.customerName, // Pastikan nama kolom sama dengan di DB
-        'alamat': transaction.alamat,
-        'tanggal':
-            transaction.date
-                .toIso8601String(), // Pastikan nama kolom sama dengan di DB
-        'total': transaction.total.toInt(),
-        'status': _paymentStatus,
-        'is_backup': true,
-      });
+      final response = await http
+          .post(
+            Uri.parse(url),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 8));
 
-      // 2. Simpan Items
-      final itemsJson =
-          transaction.items
-              .map(
-                (item) => {
-                  'id_transaksi': transaction.id_transaksi,
-                  'tyunit':
-                      item.tyunit, // WAJIB ADA karena Foreign Key ke tabel munit
-                  'nama_barang': item.nameController.text,
-                  'harga': item.price.toInt(),
-                  'quantity': item.quantity,
-                  'bonus': item.bonus,
-                  'subtotal': item.subtotal.toInt(),
-                },
-              )
-              .toList();
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        transaction.isOffline = false;
+        await _decrementLocalStock(transaction.items);
+        return SaveDestination.primaryServer;
+      }
 
-      await supabase.from('transaksi_items').insert(itemsJson);
-    } on PostgrestException catch (error) {
-      // Ini akan menangkap error spesifik dari database Supabase (PostgreSQL)
-      debugPrint("=== SUPABASE DATABASE ERROR ===");
-      debugPrint("Message: ${error.message}"); // Pesan error manusiawi
-      debugPrint(
-        "Code: ${error.code}",
-      ); // Kode error (misal: 23503 untuk FK error)
-      debugPrint("Details: ${error.details}"); // Detail teknis
-      debugPrint("Hint: ${error.hint}"); // Saran perbaikan dari DB
-      rethrow; // Tetap lempar agar fungsi pemanggil tahu kalau gagal
+      String errorMessage = 'Server merespon status ${response.statusCode}';
+      try {
+        final resJson = jsonDecode(response.body);
+        if (resJson is Map && resJson.containsKey('message')) {
+          errorMessage = resJson['message'].toString();
+        }
+      } catch (_) {}
+
+      // Server utama merespon error / kendala stok. Jangan rethrow dan memblokir kasir;
+      // lakukan failover otomatis ke Supabase atau Local Offline Queue.
+      debugPrint("Server utama merespon error ($errorMessage). Melakukan failover...");
+      throw Exception(errorMessage);
     } catch (e) {
-      // Menangkap error umum (koneksi internet, dll)
-      debugPrint("=== UNKNOWN ERROR ===");
-      debugPrint(e.toString());
-      rethrow;
+      debugPrint("Server utama gagal ($e). Mencoba ke Supabase...");
+      // 2. Coba simpan ke server cadangan Supabase jika online
+      try {
+        await _saveToSupabase(transaction);
+        transaction.isOffline = false;
+        await _decrementLocalStock(transaction.items);
+        return SaveDestination.supabaseBackup;
+      } catch (supabaseError) {
+        debugPrint(
+            "Supabase juga tidak dapat dijangkau ($supabaseError). Masuk ke Mode Offline Lokal...");
+      }
+
+      // 3. OFFLINE BACKUP LOKAL (Paling aman):
+      // Simpan ke berkas JSON lokal di smartphone kasir agar transaksi tidak pernah hilang
+      try {
+        transaction.isOffline = true;
+        await OfflineSyncService.saveOfflineTransaction(transaction);
+        await _decrementLocalStock(transaction.items);
+        return SaveDestination.offlineLocal;
+      } catch (localError) {
+        throw Exception(
+            'Gagal menyimpan nota baik di server maupun lokal: $localError');
+      }
+    }
+  }
+
+  Future<void> _decrementLocalStock(List<TransactionItem> items) async {
+    try {
+      final cached = await OfflineSyncService.getCachedProducts();
+      if (cached.isEmpty) return;
+
+      bool changed = false;
+      for (final item in items) {
+        final tyunit = _resolveTyunit(item);
+        final idx = cached.indexWhere(
+          (p) =>
+              p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
+              p.name.toLowerCase() == item.name.toLowerCase(),
+        );
+        if (idx != -1) {
+          final totalDeducted = item.quantity + item.bonus;
+          final updatedStock =
+              (cached[idx].stock - totalDeducted).clamp(0, 999999);
+          cached[idx] = Item(
+            tyunit: cached[idx].tyunit,
+            name: cached[idx].name,
+            price: cached[idx].price,
+            stock: updatedStock,
+          );
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        await OfflineSyncService.cacheProducts(cached);
+        if (mounted) {
+          setState(() {
+            _products = cached;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Gagal update stok lokal setelah transaksi: $e");
     }
   }
 
@@ -216,6 +405,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   void _removeItemField(int index) {
+    if (_items.length <= 1) return;
     setState(() {
       _items[index].dispose();
       _items.removeAt(index);
@@ -226,429 +416,1112 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     return _items.fold(0.0, (sum, item) => sum + item.subtotal);
   }
 
-  Future<void> _saveTransactionToApi(Transaction transaction) async {
-    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
-
-    try {
-      final response = await http.post(
-        Uri.parse(url),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-
-        body: jsonEncode({
-          'id_transaksi':
-              transaction.id_transaksi, // tetap pakai id_transaksi lama
-          'customerName': transaction.customerName,
-          'alamat': transaction.alamat,
-          'date': transaction.date.toIso8601String(),
-          'total': transaction.total,
-          'status': _paymentStatus,
-          'items':
-              transaction.items
-                  .map(
-                    (item) => {
-                      'tyunit': item.tyunit, // tambahkan ini
-                      'name': item.nameController.text,
-                      'price': item.price,
-                      'quantity': item.quantity,
-                      'bonus': item.bonus,
-                      'subtotal': item.subtotal,
-                    },
-                  )
-                  .toList(),
-        }),
-      );
-
-      if (response.statusCode != 200 && response.statusCode != 201) {
-        print(response.body);
-        throw Exception(
-          'Gagal menyimpan transaksi ke API. Code: ${response.statusCode}',
-        );
-      }
-    } catch (e) {
-      debugPrint("Laravel Gagal, mencoba backup ke Supabase: $e");
-
-      try {
-        await _saveToSupabase(transaction);
-        debugPrint("Berhasil simpan ke Supabase (Backup Mode)");
-      } catch (supabaseError) {
-        throw Exception('Semua server (Utama & Backup) tidak dapat dijangkau.');
-      }
-    }
-
-    // 🔹 Simpan data baru
-  }
-
-  void _saveTransaction() async {
-    if (_formKey.currentState!.validate()) {
-      _formKey.currentState!.save();
-
-      setState(() => _isCheckingId = true);
-
-      // 🔹 Kalau tambah baru, pastikan generate ID unik
-      if (widget.transaction == null) {
-        bool exists = await _checkTransactionIdExists(_transactionId);
-        if (exists) {
-          await _generateTransactionId();
-        }
-      }
-
-      final newTransaction = Transaction(
-        id: '', // biarkan kosong, karena MockAPI generate baru
-        id_transaksi: widget.transaction?.id_transaksi ?? _transactionId,
-        customerName: _customerNameController.text,
-        alamat: _alamatCustomer.text,
-        date: _selectedDate,
-        items: List.from(_items),
-        total: _calculateTotal(),
-        status: _paymentStatus,
-      );
-
-      try {
-        await _saveTransactionToApi(newTransaction);
-        widget.onSave(newTransaction);
-
-        widget.onNavigateTab?.call(1);
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Transaksi berhasil disimpan ke API!')),
-        );
-
-        // reset form hanya kalau transaksi baru, bukan edit
-        if (widget.transaction == null) {
-          _customerNameController.clear();
-          _alamatCustomer.clear();
-          for (final item in _items) {
-            item.dispose();
-          }
+  void _openProductPicker(int index) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => _ProductPickerSheet(
+        products: _products,
+        isLoading: _isLoadingProducts,
+        onSelect: (product) {
           setState(() {
-            _items.clear();
-            _items.add(TransactionItem());
-            _selectedDate = DateTime.now();
+            _items[index].selectedItem = product;
+            _items[index].nameController.text = product.name;
+            _items[index].priceController.text = product.price.toString();
+            _items[index].tyunit = product.tyunit;
           });
-          await _generateTransactionId();
-        } else {
-          Navigator.pop(context, newTransaction);
-        }
-      } catch (e) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Gagal simpan ke API: $e')));
-      } finally {
-        setState(() => _isCheckingId = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Input Transaksi Baru')),
-      body: Stack(
-        children: [
-          Form(
-            key: _formKey,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'ID Transaksi: $_transactionId',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    controller: _customerNameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Nama Konsumen',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Nama konsumen tidak boleh kosong';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    controller: _alamatCustomer,
-                    decoration: const InputDecoration(
-                      labelText: 'Alamat Konsumen',
-                      border: OutlineInputBorder(),
-                    ),
-                    maxLines: 3,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Alamat tidak boleh kosong';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: InputDecorator(
-                          decoration: const InputDecoration(
-                            labelText: 'Tanggal Transaksi',
-                            border: OutlineInputBorder(),
-                          ),
-                          child: Text(
-                            DateFormat('dd-MM-yyyy').format(_selectedDate),
-                            style: const TextStyle(fontSize: 16),
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.calendar_today),
-                        onPressed: () => _selectDate(context),
-                      ),
-                    ],
-                  ),
-
-                  // const SizedBox(height: 20),
-                  // DropdownButtonFormField<String>(
-                  //   value: _paymentStatus,
-                  //   decoration: const InputDecoration(
-                  //     labelText: 'Status Pembayaran',
-                  //     border: OutlineInputBorder(),
-                  //   ),
-                  //   items: const [
-                  //     DropdownMenuItem(value: 'LUNAS', child: Text('LUNAS')),
-                  //     DropdownMenuItem(value: 'BON', child: Text('BON')),
-                  //   ],
-                  //   onChanged: (value) {
-                  //     if (value != null) {
-                  //       setState(() {
-                  //         _paymentStatus = value;
-                  //       });
-                  //     }
-                  //   },
-                  // ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Daftar Barang:',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 10),
-                  ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: _items.length,
-                    itemBuilder: (context, index) {
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 8.0),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12.0),
-                          child: Column(
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'Barang #${index + 1}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  if (_items.length > 1)
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.red,
-                                      ),
-                                      onPressed: () => _removeItemField(index),
-                                    ),
-                                ],
-                              ),
-                              DropdownButtonFormField<Item>(
-                                value: _items[index].selectedItem,
-                                decoration: const InputDecoration(
-                                  labelText: 'Nama Barang',
-                                ),
-                                items:
-                                    _products.map((product) {
-                                      return DropdownMenuItem<Item>(
-                                        value: product,
-                                        child: Text(product.name),
-                                      );
-                                    }).toList(),
-                                onChanged: (value) {
-                                  setState(() {
-                                    _items[index].selectedItem = value;
-                                    _items[index].nameController.text =
-                                        value?.name ?? '';
-                                    _items[index].priceController.text =
-                                        value?.price.toString() ?? '0';
-                                    _items[index].tyunit = value?.tyunit ?? '';
-                                  });
-                                },
-                                validator:
-                                    (value) =>
-                                        value == null
-                                            ? 'Pilih barang dulu'
-                                            : null,
-                              ),
-
-                              TextFormField(
-                                controller: _items[index].priceController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Harga Satuan',
-                                ),
-                                readOnly: true,
-                              ),
-
-                              TextFormField(
-                                controller: _items[index].qtyController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Kuantitas',
-                                ),
-                                keyboardType: TextInputType.number,
-                                onChanged: (_) => setState(() {}),
-                                validator: (value) {
-                                  if (value == null ||
-                                      int.tryParse(value) == null ||
-                                      int.parse(value) <= 0) {
-                                    return 'Kuantitas harus angka positif';
-                                  }
-                                  return null;
-                                },
-                              ),
-                              TextFormField(
-                                controller: _items[index].bonusController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Bonus',
-                                ),
-                                keyboardType: TextInputType.number,
-                                onChanged: (_) => setState(() {}),
-                                validator: (value) {
-                                  if (value == null) return null;
-                                  if (value.isNotEmpty &&
-                                      int.tryParse(value) == null) {
-                                    return 'Bonus harus angka';
-                                  }
-                                  return null;
-                                },
-                              ),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: Text(
-                                  'Subtotal: ${NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(_items[index].subtotal)}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  Center(
-                    child: ElevatedButton.icon(
-                      onPressed: _addItemField,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Tambah Barang Lain'),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      'Total Keseluruhan: ${NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ').format(_calculateTotal())}',
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 30),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        await _showPaymentStatusDialog(); // user pilih status dulu
-                        _saveTransaction(); // kemudian simpan
-                      },
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 15),
-                        backgroundColor: Theme.of(context).primaryColor,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: const Text(
-                        'Simpan Transaksi',
-                        style: TextStyle(fontSize: 18),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_isCheckingId)
-            Container(
-              color: Colors.black.withOpacity(0.3),
-              child: const Center(child: CircularProgressIndicator()),
-            ),
-        ],
+        },
       ),
     );
   }
 
-  Future<void> _showPaymentStatusDialog() async {
-    String tempStatus = _paymentStatus;
+  Future<void> _saveTransaction() async {
+    if (!_formKey.currentState!.validate()) return;
+    _formKey.currentState!.save();
 
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text("Pilih Status Pembayaran"),
-          content: StatefulBuilder(
-            builder: (context, setStateDialog) {
-              return DropdownButtonFormField<String>(
-                value: tempStatus,
-                items: const [
-                  DropdownMenuItem(value: 'LUNAS', child: Text('LUNAS')),
-                  DropdownMenuItem(value: 'BON', child: Text('BON')),
-                ],
-                onChanged: (value) {
-                  if (value != null) {
-                    setStateDialog(() {
-                      tempStatus = value;
-                    });
-                  }
-                },
-              );
-            },
+    for (int i = 0; i < _items.length; i++) {
+      if (_items[i].nameController.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Silakan pilih produk untuk Barang #${i + 1}'),
+            backgroundColor: AppColors.error,
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Batal"),
+        );
+        return;
+      }
+    }
+
+    setState(() => _isSaving = true);
+
+    if (widget.transaction == null) {
+      final exists = await _checkTransactionIdExists(_transactionId);
+      if (exists) {
+        await _generateTransactionId();
+      }
+    }
+
+    final newTransaction = Transaction(
+      id: widget.transaction?.id ?? '',
+      id_transaksi: widget.transaction?.id_transaksi ?? _transactionId,
+      customerName: _customerNameController.text.trim(),
+      alamat: _alamatCustomer.text.trim(),
+      date: _selectedDate,
+      items: List.from(_items),
+      total: _calculateTotal(),
+      status: _paymentStatus,
+    );
+
+    try {
+      final destination = await _saveTransactionToApi(newTransaction);
+      if (!mounted) return;
+
+      widget.onSave(newTransaction);
+      _showSuccessDialog(newTransaction, destination);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal menyimpan nota: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  void _resetForm() {
+    _customerNameController.clear();
+    _alamatCustomer.clear();
+    for (final item in _items) {
+      item.dispose();
+    }
+    setState(() {
+      _items.clear();
+      _items.add(TransactionItem());
+      _selectedDate = DateTime.now();
+      _paymentStatus = 'LUNAS';
+    });
+    _generateTransactionId();
+  }
+
+  void _showSuccessDialog(Transaction transaction, SaveDestination destination) {
+    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 64,
+                  height: 64,
+                  decoration: BoxDecoration(
+                    color: destination == SaveDestination.offlineLocal
+                        ? Colors.amber.shade100
+                        : AppColors.lunasBg,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    destination == SaveDestination.offlineLocal
+                        ? Icons.cloud_off_rounded
+                        : Icons.check_circle_rounded,
+                    color: destination == SaveDestination.offlineLocal
+                        ? Colors.amber.shade900
+                        : AppColors.lunas,
+                    size: 38,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  destination == SaveDestination.offlineLocal
+                      ? 'Nota Disimpan Secara Offline!'
+                      : 'Nota Berhasil Disimpan!',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${transaction.id_transaksi} • ${transaction.customerName}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  currencyFormat.format(transaction.total),
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
+                  ),
+                ),
+                if (destination == SaveDestination.offlineLocal) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      border: Border.all(color: Colors.amber.shade400),
+                      borderRadius: BorderRadius.circular(100),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.offline_pin_rounded,
+                            size: 16, color: Colors.amber.shade900),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Tersimpan di Memori HP (Mode Offline)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.amber.shade900,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Server offline/downtime. Nota tetap aman tersimpan di HP & siap disinkronkan saat server kembali online.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ] else if (destination == SaveDestination.supabaseBackup) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppColors.backupBg,
+                      borderRadius: BorderRadius.circular(100),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.cloud_done, size: 14, color: AppColors.backup),
+                        SizedBox(width: 6),
+                        Text(
+                          'Tersimpan di Server Cadangan (Supabase)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.backup,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 24),
+                // Tombol Aksi: Cetak Struk & Kirim PDF
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.button),
+                          ),
+                        ),
+                        icon: const Icon(Icons.print, size: 20),
+                        label: const Text('Cetak Struk'),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => Printbluetooth.fromTransaction(
+                                transaction: transaction,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.button),
+                          ),
+                        ),
+                        icon: const Icon(Icons.share, size: 20),
+                        label: const Text('Kirim PDF'),
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          await _sharePdfInvoice(transaction);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      if (widget.transaction != null) {
+                        Navigator.pop(context, transaction);
+                      } else {
+                        _resetForm();
+                        widget.onNavigateTab?.call(1);
+                        if (Navigator.canPop(context)) {
+                          Navigator.pop(context, transaction);
+                        }
+                      }
+                    },
+                    child: const Text('Selesai / Kembali'),
+                  ),
+                ),
+              ],
             ),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _paymentStatus = tempStatus; // hanya dari popup!
-                });
-                Navigator.pop(context);
-              },
-              child: const Text("OK"),
-            ),
-          ],
+          ),
         );
       },
+    );
+  }
+
+  Future<void> _sharePdfInvoice(Transaction transaction) async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Menyiapkan faktur PDF resmi...'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+    await PdfInvoiceService.sharePdf(
+      context: context,
+      transaction: transaction,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.transaction != null ? 'Edit Transaksi' : 'Nota Baru'),
+        actions: [
+          Container(
+            margin: const EdgeInsets.only(right: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight,
+              borderRadius: BorderRadius.circular(AppRadius.chipFull),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.tag, size: 14, color: AppColors.primary),
+                const SizedBox(width: 4),
+                Text(
+                  _transactionId.isEmpty ? 'Memuat ID...' : _transactionId,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      body: Form(
+        key: _formKey,
+        child: Column(
+          children: [
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.all(AppSpacing.screenMargin),
+                children: [
+                  // CARD: Data Konsumen & Pembayaran
+                  Container(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(AppRadius.card),
+                      border: Border.all(color: AppColors.surfaceBorder),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Informasi Konsumen',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        TextFormField(
+                          controller: _customerNameController,
+                          decoration: const InputDecoration(
+                            labelText: 'Nama Konsumen *',
+                            hintText: 'Contoh: Toko Berkah',
+                            prefixIcon: Icon(Icons.person_outline, size: 20),
+                          ),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Nama konsumen wajib diisi';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        TextFormField(
+                          controller: _alamatCustomer,
+                          decoration: const InputDecoration(
+                            labelText: 'Alamat Konsumen * (Wajib Diisi)',
+                            hintText: 'Contoh: Jl. Ahmad Yani No. 12, Kutacane',
+                            helperText:
+                                '* Catatan: Alamat wajib diisi untuk keperluan nota & pengiriman.',
+                            helperStyle: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.primary,
+                            ),
+                            prefixIcon:
+                                Icon(Icons.location_on_outlined, size: 20),
+                          ),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Alamat konsumen wajib diisi';
+                            }
+                            if (value.trim().length < 3) {
+                              return 'Alamat konsumen minimal 3 karakter';
+                            }
+                            return null;
+                          },
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        // Tanggal Transaksi
+                        InkWell(
+                          onTap: () => _selectDate(context),
+                          borderRadius: BorderRadius.circular(AppRadius.input),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 12,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.background,
+                              borderRadius: BorderRadius.circular(AppRadius.input),
+                              border: Border.all(color: AppColors.surfaceBorder),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.calendar_today_outlined,
+                                  size: 18,
+                                  color: AppColors.textSecondary,
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  'Tanggal: ${DateFormat('dd MMMM yyyy').format(_selectedDate)}',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                                const Spacer(),
+                                const Text(
+                                  'Ubah',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.lg),
+                        // Status Pembayaran: Segmented Control
+                        const Text(
+                          'Status Pembayaran',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        PaymentSegmentedControl(
+                          selectedStatus: _paymentStatus,
+                          onChanged: (status) {
+                            setState(() {
+                              _paymentStatus = status;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: AppSpacing.xl),
+
+                  // Header Bagian Daftar Barang
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Daftar Barang (${_items.length})',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _addItemField,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Tambah Baris'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+
+                  // List Item Kartu
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _items.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.cardGap),
+                    itemBuilder: (context, index) {
+                      final item = _items[index];
+                      return Container(
+                        padding: const EdgeInsets.all(AppSpacing.lg),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(AppRadius.card),
+                          border: Border.all(color: AppColors.surfaceBorder),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Card Header: Nomor Barang & Tombol Hapus
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 24,
+                                      height: 24,
+                                      alignment: Alignment.center,
+                                      decoration: const BoxDecoration(
+                                        color: AppColors.primaryLight,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Text(
+                                        '${index + 1}',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Barang',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 14,
+                                        color: AppColors.textPrimary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                if (_items.length > 1)
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: AppColors.error,
+                                      size: 20,
+                                    ),
+                                    tooltip: 'Hapus barang ini',
+                                    onPressed: () => _removeItemField(index),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: AppSpacing.sm),
+
+                            // Pilih Produk Tappable Sheet
+                            InkWell(
+                              onTap: () => _openProductPicker(index),
+                              borderRadius: BorderRadius.circular(AppRadius.input),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 12,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: AppColors.background,
+                                  borderRadius: BorderRadius.circular(AppRadius.input),
+                                  border: Border.all(color: AppColors.surfaceBorder),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.inventory_2_outlined,
+                                          size: 18,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Text(
+                                            item.nameController.text.isEmpty
+                                                ? 'Pilih Produk dari Master Stock...'
+                                                : item.nameController.text,
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: item.nameController.text.isEmpty
+                                                  ? FontWeight.w400
+                                                  : FontWeight.w600,
+                                              color: item.nameController.text.isEmpty
+                                                  ? AppColors.textSecondary
+                                                  : AppColors.textPrimary,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        const Icon(
+                                          Icons.arrow_drop_down,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ],
+                                    ),
+                                    if (item.nameController.text.isNotEmpty) ...[
+                                      const SizedBox(height: 6),
+                                      Builder(
+                                        builder: (_) {
+                                          final tyunit = _resolveTyunit(item);
+                                          final matched = _products.firstWhere(
+                                            (p) =>
+                                                p.tyunit.toLowerCase() ==
+                                                    tyunit.toLowerCase() ||
+                                                p.name.toLowerCase() ==
+                                                    item.nameController.text
+                                                        .trim()
+                                                        .toLowerCase(),
+                                            orElse: () => Item(
+                                              tyunit: tyunit,
+                                              name: item.nameController.text,
+                                              price: item.price,
+                                              stock: item.selectedItem?.stock ?? 0,
+                                            ),
+                                          );
+                                          final availableStock =
+                                              item.selectedItem?.stock ??
+                                                  matched.stock;
+                                          return Row(
+                                            children: [
+                                              Text(
+                                                'Kode: $tyunit',
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: AppColors.textSecondary,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 6,
+                                                  vertical: 1.5,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: availableStock > 0
+                                                      ? AppColors.success
+                                                          .withValues(alpha: 0.12)
+                                                      : AppColors.error
+                                                          .withValues(alpha: 0.12),
+                                                  borderRadius:
+                                                      BorderRadius.circular(4),
+                                                ),
+                                                child: Text(
+                                                  'Stok Tersedia: $availableStock',
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: availableStock > 0
+                                                        ? AppColors.success
+                                                        : AppColors.error,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: AppSpacing.md),
+
+                            // Baris: Harga Satuan, Qty, dan Bonus
+                            Row(
+                              children: [
+                                // Harga Satuan
+                                Expanded(
+                                  flex: 3,
+                                  child: TextFormField(
+                                    controller: item.priceController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Harga (Rp)',
+                                      contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    readOnly: true,
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                // Kuantitas
+                                Expanded(
+                                  flex: 2,
+                                  child: TextFormField(
+                                    controller: item.qtyController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Jumlah *',
+                                      contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 12,
+                                      ),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                    validator: (v) {
+                                      if (v == null ||
+                                          int.tryParse(v) == null ||
+                                          int.parse(v) <= 0) {
+                                        return 'Min 1';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                // Bonus
+                                Expanded(
+                                  flex: 2,
+                                  child: TextFormField(
+                                    controller: item.bonusController,
+                                    decoration: InputDecoration(
+                                      labelText: 'Bonus',
+                                      contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 12,
+                                      ),
+                                      suffixIcon: item.bonus > 0
+                                          ? const Icon(
+                                              Icons.card_giftcard,
+                                              size: 16,
+                                              color: AppColors.bon,
+                                            )
+                                          : null,
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    style: const TextStyle(fontSize: 14),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: AppSpacing.md),
+
+                            // Subtotal Item
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                if (item.bonus > 0)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.bonBg,
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      '+${item.bonus} Bonus',
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.bon,
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  const SizedBox(),
+                                Text(
+                                  'Subtotal: ${currencyFormat.format(item.subtotal)}',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+
+                  const SizedBox(height: AppSpacing.md),
+
+                  // Tombol Tambah Barang Besar (Thumb-friendly)
+                  OutlinedButton.icon(
+                    onPressed: _addItemField,
+                    icon: const Icon(Icons.add_circle_outline, size: 20),
+                    label: const Text('Tambah Barang Lain'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 48),
+                    ),
+                  ),
+
+                  const SizedBox(height: 100), // Spasi untuk sticky bottom
+                ],
+              ),
+            ),
+
+            // STICKY BOTTOM BAR (Total & Tombol Simpan)
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.screenMargin,
+                vertical: 16,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 16,
+                    offset: const Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 4,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Total Keseluruhan',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          FittedBox(
+                            alignment: Alignment.centerLeft,
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              currencyFormat.format(_calculateTotal()),
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      flex: 5,
+                      child: ElevatedButton(
+                        onPressed: _isSaving ? null : _saveTransaction,
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(0, 52),
+                          backgroundColor: AppColors.primary,
+                        ),
+                        child: _isSaving
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text(
+                                'Simpan Nota',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Bottom Sheet untuk memilih produk dari Master Stock
+class _ProductPickerSheet extends StatefulWidget {
+  final List<Item> products;
+  final bool isLoading;
+  final ValueChanged<Item> onSelect;
+
+  const _ProductPickerSheet({
+    required this.products,
+    required this.isLoading,
+    required this.onSelect,
+  });
+
+  @override
+  State<_ProductPickerSheet> createState() => _ProductPickerSheetState();
+}
+
+class _ProductPickerSheetState extends State<_ProductPickerSheet> {
+  final TextEditingController _searchCtrl = TextEditingController();
+  List<Item> _filtered = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _filtered = widget.products;
+    _searchCtrl.addListener(_onSearch);
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onSearch() {
+    final query = _searchCtrl.text.toLowerCase().trim();
+    setState(() {
+      if (query.isEmpty) {
+        _filtered = widget.products;
+      } else {
+        _filtered = widget.products.where((p) {
+          return p.name.toLowerCase().contains(query);
+        }).toList();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.75,
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.surfaceBorder,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(AppSpacing.screenMargin),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Pilih Produk',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _searchCtrl,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: 'Cari nama produk...',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: _searchCtrl.text.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () => _searchCtrl.clear(),
+                          )
+                        : null,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: widget.isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _filtered.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.inventory_2_outlined,
+                              size: 48,
+                              color: AppColors.textSecondary.withValues(alpha: 0.5),
+                            ),
+                            const SizedBox(height: 12),
+                            const Text(
+                              'Produk tidak ditemukan',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: _filtered.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (ctx, idx) {
+                          final product = _filtered[idx];
+                          return ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 4,
+                            ),
+                            title: Text(
+                              product.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 4.0),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    'Kode: ${product.tyunit.isEmpty ? '-' : product.tyunit}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: product.stock > 0
+                                          ? AppColors.success
+                                              .withValues(alpha: 0.12)
+                                          : AppColors.error
+                                              .withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      'Stok: ${product.stock}',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: product.stock > 0
+                                            ? AppColors.success
+                                            : AppColors.error,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            trailing: Text(
+                              currencyFormat.format(product.price),
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            onTap: () {
+                              widget.onSelect(product);
+                              Navigator.pop(ctx);
+                            },
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
     );
   }
 }

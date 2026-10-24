@@ -16,8 +16,8 @@ class Printbluetooth extends StatefulWidget {
   final String idTransaksi;
   final String status;
 
-
   Printbluetooth({
+    super.key,
     required this.orderItems,
     required this.paymentMethod,
     required this.total,
@@ -27,9 +27,34 @@ class Printbluetooth extends StatefulWidget {
     required this.idTransaksi,
     required this.status,
   });
+
+  Printbluetooth.fromTransaction({
+    super.key,
+    required Transaction transaction,
+  })  : orderItems = transaction.items.map((item) {
+          return {
+            'items': {
+              'name': item.name,
+              'harga': item.price,
+              'bonus': item.bonus,
+            },
+            'quantity': item.quantity,
+          };
+        }).toList(),
+        paymentMethod = 'Tunai',
+        total = transaction.total.toInt(),
+        date = transaction.date,
+        customerName = transaction.customerName,
+        alamat = transaction.alamat,
+        idTransaksi = transaction.id_transaksi,
+        status = transaction.status;
+
   @override
-  _MyAppState createState() => new _MyAppState();
+  _MyAppState createState() => _MyAppState();
 }
+
+typedef PrinterBluetooth = Printbluetooth;
+
 
 class _MyAppState extends State<Printbluetooth> {
   BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;

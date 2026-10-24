@@ -1,3 +1,4 @@
+import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
 
 class Transaction {
@@ -9,6 +10,7 @@ class Transaction {
   List<TransactionItem> items;
   double total;
   String status;
+  bool isOffline;
 
   Transaction({
     required this.id,
@@ -19,21 +21,46 @@ class Transaction {
     required this.items,
     required this.total,
     required this.status,
+    this.isOffline = false,
   });
 
   factory Transaction.fromJson(Map<String, dynamic> json) {
+    final rawTotal = json['total'];
+    final double parsedTotal = (rawTotal is num)
+        ? rawTotal.toDouble()
+        : (double.tryParse(rawTotal?.toString() ?? '0') ?? 0.0);
+
     return Transaction(
-      id_transaksi: json['id_transaksi'] ?? "",
-      customerName: json['customerName'] ?? "",
-      alamat: json['alamat'] ?? "",
-      date: DateTime.tryParse(json['date'].toString()) ?? DateTime.now(),
-      status: json['status'] ?? "",
-      total: double.tryParse(json['total']?.toString() ?? "0") ?? 0,
-      id: json['id']?.toString() ?? "",
-      items:
-          (json['items'] as List)
-              .map((e) => TransactionItem.fromJson(e))
-              .toList(),
+      id: json['id']?.toString() ?? '',
+      id_transaksi: json['id_transaksi']?.toString() ?? '',
+      customerName: json['customer_name']?.toString() ??
+          json['customerName']?.toString() ??
+          '',
+      alamat: json['alamat']?.toString() ?? '',
+      date: DateTime.tryParse(
+            json['tanggal']?.toString() ?? json['date']?.toString() ?? '',
+          ) ??
+          DateTime.now(),
+      total: parsedTotal,
+      status: json['status']?.toString() ?? 'LUNAS',
+      isOffline: json['is_offline'] == true,
+      items: (json['items'] as List<dynamic>?)
+              ?.map((e) => TransactionItem.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          [],
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    final dateFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
+    return {
+      'id_transaksi': id_transaksi,
+      'customerName': customerName,
+      'alamat': alamat,
+      'date': dateFormat.format(date),
+      'total': total.truncateToDouble() == total ? total.toInt() : total,
+      'status': status,
+      'items': items.map((i) => i.toJson()).toList(),
+    };
   }
 }

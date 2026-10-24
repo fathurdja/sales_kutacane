@@ -43,3 +43,39 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Markdown documentation files
+*.md
+**/*.md
+
+# Keys, Keystores & Certificates (Release signing & security)
+*.jks
+*.keystore
+*.key
+*.pem
+*.p12
+*.pfx
+*.pkcs12
+*.der
+*.cer
+*.crt
+key.properties
+**/key.properties
+android/key.properties
+android/app/key.properties
+
+# Environment variables, credentials & secrets
+.env
+.env.*
+*.env
+*.secret
+secrets.json
+secret.json
+**/secret*.json
+*credentials*.json
+credentials.json
+google-services.json
+**/google-services.json
+GoogleService-Info.plist
+**/GoogleService-Info.plist
+
