@@ -1,14 +1,13 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/Item.dart';
+import 'package:kasir_kutacane/models/stock_group.dart';
+import 'package:kasir_kutacane/models/user_model.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
-import 'package:kasir_kutacane/widgets/app_widgets.dart';
-
-enum StockFilter { all, outOfStock, lowStock, available }
 
 class StockInputPage extends StatefulWidget {
   const StockInputPage({super.key});
@@ -17,1075 +16,1252 @@ class StockInputPage extends StatefulWidget {
   State<StockInputPage> createState() => _StockInputPageState();
 }
 
-class _StockInputPageState extends State<StockInputPage> {
+class _StockInputPageState extends State<StockInputPage>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
   final TextEditingController _searchCtrl = TextEditingController();
-  List<Item> _products = [];
+
+  List<StockGroup> _stockGroups = [];
+  List<Item> _allProducts = [];
   List<Item> _filteredProducts = [];
-  Map<String, int> _productIdMap = {}; // tyunit -> product id (1..13)
+  Map<String, dynamic> _terjualData = {};
+  int? _adminSelectedUserId;
+  List<UserModel> _salesUsers = [];
+
   bool _isLoading = true;
   String? _errorMessage;
-  StockFilter _selectedFilter = StockFilter.all;
+  String _selectedTerjualKelompok = 'ALL';
 
   @override
   void initState() {
     super.initState();
-    _loadStockData();
-    _searchCtrl.addListener(_applyFilter);
+    _tabController = TabController(length: 3, vsync: this);
+    _searchCtrl.addListener(_applyProductFilter);
+    _loadAllStockData();
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadStockData() async {
+  Future<void> _loadAllStockData() async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      // 1. Ambil dari master-stocks
-      const msUrl = 'https://laravel.fathurrzqn8n.web.id/api/master-stocks';
-      final msRes = await http
-          .get(Uri.parse(msUrl), headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 8));
-
-      // 2. Ambil dari products untuk sinkronisasi stock & id
-      const prodUrl = 'https://laravel.fathurrzqn8n.web.id/api/products';
-      final prodRes = await http
-          .get(Uri.parse(prodUrl), headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 8));
-
-      Map<String, int> stockFromProducts = {};
-      Map<String, int> idFromProducts = {};
-
-      if (prodRes.statusCode == 200) {
-        final List<dynamic> prodData = jsonDecode(prodRes.body);
-        for (var p in prodData) {
-          final id = (p['id'] as num?)?.toInt() ?? 0;
-          final tyunit = 'BV${id.toString().padLeft(2, '0')}';
-          final stock = (p['stock'] as num?)?.toInt() ?? 0;
-          stockFromProducts[tyunit] = stock;
-          idFromProducts[tyunit] = id;
-        }
+      if (AuthService.currentUser?.isAdmin == true && _salesUsers.isEmpty) {
+        try {
+          _salesUsers = await AuthService.fetchUsers();
+        } catch (_) {}
       }
 
-      if (msRes.statusCode == 200) {
-        final body = jsonDecode(msRes.body);
-        final List data = body['data'] ?? [];
+      final results = await Future.wait([
+        StockApiService.fetchStockSummary(userId: _adminSelectedUserId),
+        StockApiService.fetchProducts(),
+        StockApiService.fetchStockTerjual(),
+      ]);
 
-        final loaded = data.map<Item>((json) {
-          final item = Item.fromJson(json);
-          // Prioritaskan stok aktif dari produk jika munit bernilai null/0
-          final prodStock = stockFromProducts[item.tyunit];
-          final finalStock = (item.stock > 0) ? item.stock : (prodStock ?? 0);
-          return Item(
-            tyunit: item.tyunit,
-            name: item.name,
-            price: item.price,
-            stock: finalStock,
-          );
-        }).toList();
+      final groups = results[0] as List<StockGroup>;
+      final products = results[1] as List<Item>;
+      final terjual = results[2] as Map<String, dynamic>;
 
-        if (!mounted) return;
-        setState(() {
-          _products = loaded;
-          _productIdMap = idFromProducts;
-          _isLoading = false;
-        });
-        OfflineSyncService.cacheProducts(loaded);
-        _applyFilter();
-      } else {
-        throw Exception('Server error (${msRes.statusCode})');
-      }
-    } catch (e) {
       if (!mounted) return;
       setState(() {
+        _stockGroups = groups;
+        _allProducts = products;
+        _terjualData = terjual;
         _isLoading = false;
-        _errorMessage = e.toString();
       });
-    }
-  }
 
-  void _applyFilter() {
-    final query = _searchCtrl.text.toLowerCase().trim();
-    setState(() {
-      _filteredProducts = _products.where((p) {
-        // Search query
-        if (query.isNotEmpty) {
-          final matchName = p.name.toLowerCase().contains(query);
-          final matchCode = p.tyunit.toLowerCase().contains(query);
-          if (!matchName && !matchCode) return false;
-        }
-
-        // Status filter
-        switch (_selectedFilter) {
-          case StockFilter.all:
-            return true;
-          case StockFilter.outOfStock:
-            return p.stock <= 0;
-          case StockFilter.lowStock:
-            return p.stock > 0 && p.stock < 20;
-          case StockFilter.available:
-            return p.stock >= 20;
-        }
-      }).toList();
-    });
-  }
-
-  int get _totalStock => _products.fold(0, (sum, p) => sum + p.stock);
-  int get _outOfStockCount => _products.where((p) => p.stock <= 0).length;
-  int get _lowStockCount =>
-      _products.where((p) => p.stock > 0 && p.stock < 20).length;
-
-  int _resolveProductId(Item item) {
-    if (_productIdMap.containsKey(item.tyunit)) {
-      return _productIdMap[item.tyunit]!;
-    }
-    // Fallback: ekstrak angka dari BV01 -> 1
-    final digits = RegExp(r'\d+').firstMatch(item.tyunit)?.group(0);
-    return int.tryParse(digits ?? '1') ?? 1;
-  }
-
-  Future<void> _updateStockApi({
-    required Item item,
-    required int newStock,
-  }) async {
-    final productId = _resolveProductId(item);
-
-    // 1. Update /api/products/{id}
-    final prodUrl =
-        'https://laravel.fathurrzqn8n.web.id/api/products/$productId';
-    final prodPayload = {
-      'name': item.name,
-      'price': item.price.toInt(),
-      'stock': newStock,
-      'stok': newStock,
-      'qty': newStock,
-    };
-
-    // 2. Update /api/master-stocks/{TYUNIT}
-    final msUrl =
-        'https://laravel.fathurrzqn8n.web.id/api/master-stocks/${item.tyunit}';
-    final msPayload = {
-      'TYUNIT': item.tyunit,
-      'NTYUNIT': item.name,
-      'hjual': item.price.toInt(),
-      'stock': newStock,
-      'stok': newStock,
-      'qty': newStock,
-    };
-
-    final headers = {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    };
-
-    // Jalankan kedua update secara paralel
-    final results = await Future.wait([
-      http.put(Uri.parse(prodUrl), headers: headers, body: jsonEncode(prodPayload)),
-      http.put(Uri.parse(msUrl), headers: headers, body: jsonEncode(msPayload)),
-    ]);
-
-    final prodRes = results[0];
-    if (prodRes.statusCode != 200 && prodRes.statusCode != 201) {
-      throw Exception('Gagal update stock di server (${prodRes.statusCode})');
-    }
-  }
-
-  void _openStockModal(Item item) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _StockInputSheet(
-        item: item,
-        onSave: (newStock) async {
-          String? serverNotice;
-          try {
-            await _updateStockApi(item: item, newStock: newStock);
-          } catch (e) {
-            debugPrint("Update stock ke server gagal ($e), disimpan ke cache lokal...");
-            serverNotice = 'Stok berhasil diperbarui di HP (Server sync tertunda)';
-          }
-
-          setState(() {
-            final idx = _products.indexWhere((p) => p.tyunit == item.tyunit);
-            if (idx != -1) {
-              _products[idx] = Item(
-                tyunit: item.tyunit,
-                name: item.name,
-                price: item.price,
-                stock: newStock,
-              );
-            }
-          });
-          await OfflineSyncService.cacheProducts(_products);
-          _applyFilter();
-
-          if (serverNotice != null && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(serverNotice),
-                backgroundColor: AppColors.info,
-                duration: const Duration(seconds: 3),
-              ),
-            );
-          }
-        },
-      ),
-    );
-  }
-
-  void _openBulkStockDialog() {
-    final TextEditingController bulkController =
-        TextEditingController(text: '100');
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.flash_on, color: AppColors.primary),
-            SizedBox(width: 8),
-            Text(
-              'Isi Stok Cepat (Semua)',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Setel jumlah stok awal untuk seluruh 13 produk Boneva sekaligus:',
-              style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: bulkController,
-              keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              decoration: const InputDecoration(
-                labelText: 'Jumlah Stok per Produk',
-                suffixText: 'pcs/unit',
-                prefixIcon: Icon(Icons.inventory),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final val = int.tryParse(bulkController.text.trim()) ?? 0;
-              Navigator.pop(ctx);
-              _performBulkUpdate(val);
-            },
-            child: const Text('Terapkan ke Semua'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _performBulkUpdate(int stockValue) async {
-    setState(() => _isLoading = true);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Sedang memperbarui stok seluruh produk...'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-
-    try {
-      for (final item in _products) {
-        await _updateStockApi(item: item, newStock: stockValue);
-      }
-      await _loadStockData();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Berhasil mengisi stok $stockValue untuk seluruh produk!'),
-          backgroundColor: AppColors.lunas,
-        ),
-      );
+      // Simpan ke cache offline HP
+      await OfflineSyncService.cacheProducts(products);
+      _applyProductFilter();
     } catch (e) {
+      debugPrint("Gagal memuat data dari server ($e), memuat cache offline...");
+      final cached = await OfflineSyncService.getCachedProducts();
       if (!mounted) return;
-      setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Gagal input stok massal: $e'),
-          backgroundColor: AppColors.error,
-        ),
-      );
+      setState(() {
+        _allProducts = cached;
+        _isLoading = false;
+        _errorMessage = cached.isNotEmpty
+            ? 'Mode Offline: Menampilkan data stok tersimpan di HP.'
+            : 'Gagal menghubungi server: $e';
+      });
+      _applyProductFilter();
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final currencyFormat =
-        NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Input & Manajemen Stok'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.flash_on),
-            tooltip: 'Input Cepat Semua Produk',
-            onPressed: _products.isEmpty ? null : _openBulkStockDialog,
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Segarkan data',
-            onPressed: _loadStockData,
-          ),
-        ],
-      ),
-      body: RefreshIndicator(
-        onRefresh: _loadStockData,
-        color: AppColors.primary,
-        child: Column(
-          children: [
-            // RINGKASAN STOK HERO CARD
-            Container(
-              color: AppColors.surface,
-              padding: const EdgeInsets.fromLTRB(
-                AppSpacing.screenMargin,
-                AppSpacing.md,
-                AppSpacing.screenMargin,
-                AppSpacing.lg,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // KPI Mini Cards
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _kpiMiniCard(
-                          label: 'Total Varian',
-                          value: '${_products.length}',
-                          icon: Icons.inventory_2_outlined,
-                          color: AppColors.primary,
-                          bgColor: AppColors.primaryLight,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _kpiMiniCard(
-                          label: 'Total Stok',
-                          value: '$_totalStock',
-                          icon: Icons.layers_outlined,
-                          color: AppColors.lunas,
-                          bgColor: AppColors.lunasBg,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _kpiMiniCard(
-                          label: 'Habis / Kritis',
-                          value: '$_outOfStockCount',
-                          icon: Icons.warning_amber_rounded,
-                          color: _outOfStockCount > 0
-                              ? AppColors.error
-                              : AppColors.textSecondary,
-                          bgColor: _outOfStockCount > 0
-                              ? AppColors.errorBg
-                              : AppColors.background,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: AppSpacing.md),
-
-                  // Search Field
-                  TextField(
-                    controller: _searchCtrl,
-                    decoration: InputDecoration(
-                      hintText: 'Cari nama produk atau kode (BV01)...',
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                      suffixIcon: _searchCtrl.text.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear, size: 18),
-                              onPressed: () => _searchCtrl.clear(),
-                            )
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(height: AppSpacing.sm),
-
-                  // Quick Filter Chips
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        _filterChip(
-                          label: 'Semua (${_products.length})',
-                          filter: StockFilter.all,
-                        ),
-                        const SizedBox(width: 6),
-                        _filterChip(
-                          label: 'Habis ($_outOfStockCount)',
-                          filter: StockFilter.outOfStock,
-                          isWarning: _outOfStockCount > 0,
-                        ),
-                        const SizedBox(width: 6),
-                        _filterChip(
-                          label: 'Menipis ($_lowStockCount)',
-                          filter: StockFilter.lowStock,
-                        ),
-                        const SizedBox(width: 6),
-                        _filterChip(
-                          label:
-                              'Tersedia (${_products.length - _outOfStockCount - _lowStockCount})',
-                          filter: StockFilter.available,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // LIST PRODUK & STOK
-            Expanded(
-              child: _isLoading
-                  ? const SkeletonList(count: 6)
-                  : _errorMessage != null
-                      ? _buildErrorView()
-                      : _filteredProducts.isEmpty
-                          ? EmptyState(
-                              icon: Icons.inventory_outlined,
-                              title: _searchCtrl.text.isNotEmpty
-                                  ? 'Produk Tidak Ditemukan'
-                                  : 'Belum Ada Data Master Stock',
-                              subtitle: _searchCtrl.text.isNotEmpty
-                                  ? 'Tidak ada produk yang cocok dengan "${_searchCtrl.text}"'
-                                  : 'Tarik ke bawah untuk memuat ulang data produk.',
-                              actionLabel: _searchCtrl.text.isNotEmpty
-                                  ? 'Reset Pencarian'
-                                  : 'Muat Ulang',
-                              onAction: _searchCtrl.text.isNotEmpty
-                                  ? () => _searchCtrl.clear()
-                                  : _loadStockData,
-                            )
-                          : ListView.separated(
-                              padding: const EdgeInsets.all(
-                                AppSpacing.screenMargin,
-                              ),
-                              itemCount: _filteredProducts.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: AppSpacing.cardGap),
-                              itemBuilder: (context, index) {
-                                final item = _filteredProducts[index];
-                                return _buildProductStockCard(
-                                  item: item,
-                                  currencyFormat: currencyFormat,
-                                );
-                              },
-                            ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _kpiMiniCard({
-    required String label,
-    required String value,
-    required IconData icon,
-    required Color color,
-    required Color bgColor,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(AppRadius.input),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 16, color: color),
-              const Spacer(),
-              Text(
-                value,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: color,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: color.withValues(alpha: 0.9),
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _filterChip({
-    required String label,
-    required StockFilter filter,
-    bool isWarning = false,
-  }) {
-    final isSelected = _selectedFilter == filter;
-    final activeBg = isWarning ? AppColors.errorBg : AppColors.primaryLight;
-    final activeColor = isWarning ? AppColors.error : AppColors.primary;
-
-    return ActionChip(
-      label: Text(
-        label,
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-          color: isSelected ? activeColor : AppColors.textSecondary,
-        ),
-      ),
-      backgroundColor: isSelected ? activeBg : AppColors.background,
-      side: BorderSide(
-        color: isSelected ? activeColor : AppColors.surfaceBorder,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.chipFull),
-      ),
-      onPressed: () {
-        setState(() => _selectedFilter = filter);
-        _applyFilter();
-      },
-    );
-  }
-
-  Widget _buildProductStockCard({
-    required Item item,
-    required NumberFormat currencyFormat,
-  }) {
-    final isOutOfStock = item.stock <= 0;
-    final isLowStock = item.stock > 0 && item.stock < 20;
-
-    final badgeColor = isOutOfStock
-        ? AppColors.error
-        : isLowStock
-            ? AppColors.bon
-            : AppColors.lunas;
-
-    final badgeBg = isOutOfStock
-        ? AppColors.errorBg
-        : isLowStock
-            ? AppColors.bonBg
-            : AppColors.lunasBg;
-
-    final statusText = isOutOfStock
-        ? 'Habis (0)'
-        : isLowStock
-            ? 'Menipis (${item.stock})'
-            : 'Tersedia (${item.stock})';
-
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.lg),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(
-          color: isOutOfStock
-              ? AppColors.error.withValues(alpha: 0.3)
-              : AppColors.surfaceBorder,
-        ),
-        boxShadow: AppShadow.card,
-      ),
-      child: Column(
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Product Icon / Code Tag
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  item.tyunit,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.primary,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-
-              // Title & Price
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      item.name,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      currencyFormat.format(item.price),
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Stock Status Badge
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: badgeBg,
-                  borderRadius: BorderRadius.circular(AppRadius.chipFull),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: badgeColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      statusText,
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: badgeColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          const SizedBox(height: 8),
-
-          // Actions
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  const Icon(
-                    Icons.inventory_outlined,
-                    size: 16,
-                    color: AppColors.textSecondary,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Stok Aktif: ${item.stock} unit',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-              ElevatedButton.icon(
-                onPressed: () => _openStockModal(item),
-                icon: const Icon(Icons.edit, size: 16),
-                label: const Text('Input Stok'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 8,
-                  ),
-                  minimumSize: const Size(0, 36),
-                  textStyle: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AppRadius.chipFull),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildErrorView() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.xxl),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.wifi_off, size: 48, color: AppColors.error),
-            const SizedBox(height: 12),
-            const Text(
-              'Gagal Memuat Master Stock',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '$_errorMessage',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadStockData,
-              child: const Text('Coba Lagi'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Bottom Sheet untuk Input / Edit Stok Produk
-class _StockInputSheet extends StatefulWidget {
-  final Item item;
-  final Future<void> Function(int newStock) onSave;
-
-  const _StockInputSheet({
-    required this.item,
-    required this.onSave,
-  });
-
-  @override
-  State<_StockInputSheet> createState() => _StockInputSheetState();
-}
-
-class _StockInputSheetState extends State<_StockInputSheet> {
-  // Mode: 0 = Tambah Stok (Stock In), 1 = Set Total Stok (Stock Opname)
-  int _modeIndex = 0;
-  final TextEditingController _inputCtrl = TextEditingController(text: '50');
-  bool _isSaving = false;
-
-  @override
-  void dispose() {
-    _inputCtrl.dispose();
-    super.dispose();
-  }
-
-  int get _parsedInput => int.tryParse(_inputCtrl.text.trim()) ?? 0;
-
-  int get _calculatedNewStock {
-    if (_modeIndex == 0) {
-      // Tambah stok
-      return widget.item.stock + _parsedInput;
-    } else {
-      // Atur total
-      return _parsedInput;
-    }
-  }
-
-  void _addQuick(int delta) {
-    final current = _parsedInput;
-    final next = (current + delta).clamp(0, 999999);
+  void _applyProductFilter() {
+    final q = _searchCtrl.text.trim().toLowerCase();
     setState(() {
-      _inputCtrl.text = next.toString();
+      if (q.isEmpty) {
+        _filteredProducts = List.from(_allProducts);
+      } else {
+        _filteredProducts = _allProducts.where((p) {
+          return p.name.toLowerCase().contains(q) ||
+              p.tyunit.toLowerCase().contains(q) ||
+              p.kelompok.toLowerCase().contains(q);
+        }).toList();
+      }
     });
   }
 
-  Future<void> _handleSave() async {
-    final newStock = _calculatedNewStock;
-    if (newStock < 0) {
+  // ===========================================================================
+  // MODAL & AKSI: SET STOK AWAL KELOMPOK
+  // ===========================================================================
+  void _openSetStockAwalDialog(StockGroup group) {
+    if (AuthService.currentUser?.canManageStock != true) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Jumlah stok tidak boleh kurang dari 0'),
+          content: Text(
+            'Akses Ditolak: User biasa hanya memiliki hak akses melihat stok.',
+          ),
           backgroundColor: AppColors.error,
         ),
       );
       return;
     }
 
-    setState(() => _isSaving = true);
-    try {
-      await widget.onSave(newStock);
-      if (!mounted) return;
-      Navigator.pop(context);
+    final stockCtrl = TextEditingController(text: group.stockAwal.toString());
+    bool resetTerjual = false;
+    bool isSubmitting = false;
+    int? targetUserId = _adminSelectedUserId;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          return Container(
+            padding: EdgeInsets.only(
+              left: AppSpacing.screenMargin,
+              right: AppSpacing.screenMargin,
+              top: AppSpacing.xl,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + AppSpacing.xl,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: _getGroupColor(group.kelompok).withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        _getGroupIcon(group.kelompok),
+                        color: _getGroupColor(group.kelompok),
+                        size: 26,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Set Stok Awal: ${group.displayName}',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            'Kelompok Komoditas Fisik [${group.kelompok}]',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Divider(),
+                const SizedBox(height: 12),
+
+                // Info Status Saat Ini
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.bgSecondary,
+                    borderRadius: BorderRadius.circular(AppRadius.card),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _miniStat('Stok Awal', '${group.stockAwal}', group.unitName),
+                      Container(width: 1, height: 32, color: Colors.grey.shade300),
+                      _miniStat('Terjual', '${group.totalTerjual}', group.unitName),
+                      Container(width: 1, height: 32, color: Colors.grey.shade300),
+                      _miniStat('Sisa Fisik', '${group.sisaStock}', group.unitName),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Selector Alokasi Armada Sales (Khusus Admin)
+                if (AuthService.currentUser?.isAdmin == true && _salesUsers.isNotEmpty) ...[
+                  const Text(
+                    'Alokasikan Kuota Untuk Sales:',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Semua Sales (Global)'),
+                          selected: targetUserId == null,
+                          onSelected: (sel) {
+                            setModalState(() => targetUserId = null);
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                        ..._salesUsers.map((u) {
+                          final isSel = targetUserId == u.id;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: ChoiceChip(
+                              avatar: Icon(Icons.person, size: 14, color: isSel ? Colors.white : Colors.grey.shade700),
+                              label: Text(u.name),
+                              selected: isSel,
+                              onSelected: (sel) {
+                                setModalState(() => targetUserId = sel ? u.id : null);
+                              },
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+
+                const Text(
+                  'Jumlah Kuota Stok Masuk',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: stockCtrl,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  autofocus: true,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.0,
+                  ),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.inventory_2_outlined),
+                    suffixText: group.unitName,
+                    suffixStyle: const TextStyle(fontWeight: FontWeight.w600),
+                    hintText: 'Contoh: 100',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(AppRadius.input),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Opsi Quick Buttons
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    ActionChip(
+                      backgroundColor: Colors.blue.shade50,
+                      avatar: const Icon(Icons.history_rounded, size: 16, color: Colors.blue),
+                      label: Text(
+                        'Sisa Hari Ini (${group.sisaStock} ${group.unitName})',
+                        style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                      onPressed: () {
+                        setModalState(() {
+                          final sisa = group.sisaStock < 0 ? 0 : group.sisaStock;
+                          stockCtrl.text = sisa.toString();
+                          resetTerjual = true;
+                        });
+                      },
+                    ),
+                    ...[50, 100, 150, 200].map((qty) {
+                      return ActionChip(
+                        label: Text('$qty ${group.unitName}'),
+                        onPressed: () {
+                          setModalState(() {
+                            stockCtrl.text = qty.toString();
+                          });
+                        },
+                      );
+                    }),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // Switch Reset Terjual
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(AppRadius.card),
+                    border: Border.all(color: Colors.amber.shade300),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Reset Counter Penjualan ke 0?',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.amber.shade900,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Aktifkan jika ganti shift atau mulai hari baru agar hitungan terjual dimulai dari nol.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.amber.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        value: resetTerjual,
+                        activeColor: AppColors.primary,
+                        onChanged: (val) {
+                          setModalState(() => resetTerjual = val);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Tombol Simpan
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.button),
+                      ),
+                    ),
+                    icon: isSubmitting
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Icon(Icons.check_circle_outline),
+                    label: Text(
+                      isSubmitting ? 'Menyimpan...' : 'Simpan Kuota Stok Awal',
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    onPressed: isSubmitting
+                        ? null
+                        : () async {
+                            final inputQty = int.tryParse(stockCtrl.text.trim());
+                            if (inputQty == null || inputQty < 0) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Masukkan jumlah stok yang valid!'),
+                                  backgroundColor: AppColors.error,
+                                ),
+                              );
+                              return;
+                            }
+
+                            setModalState(() => isSubmitting = true);
+                            try {
+                              await StockApiService.setStockAwal(
+                                kelompok: group.kelompok,
+                                stockAwal: inputQty,
+                                resetTerjual: resetTerjual,
+                                userId: targetUserId,
+                              );
+                              if (ctx.mounted) Navigator.pop(ctx);
+                              if (mounted) {
+                                final targetUserObj = _salesUsers
+                                    .where((u) => u.id == targetUserId)
+                                    .firstOrNull;
+                                final forText = targetUserObj != null
+                                    ? ' (Khusus ${targetUserObj.name})'
+                                    : ' (Global)';
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Stok awal ${group.displayName} berhasil diset ke $inputQty ${group.unitName}$forText',
+                                    ),
+                                    backgroundColor: AppColors.lunas,
+                                  ),
+                                );
+                                _loadAllStockData();
+                              }
+                            } catch (e) {
+                              setModalState(() => isSubmitting = false);
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Gagal menyimpan: $e'),
+                                    backgroundColor: AppColors.error,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // MODAL: RESET TERJUAL
+  // ===========================================================================
+  void _confirmResetTerjual({String? kelompok}) {
+    if (AuthService.currentUser?.canManageStock != true) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Stok ${widget.item.tyunit} (${widget.item.name}) berhasil diupdate menjadi $newStock unit!',
-          ),
-          backgroundColor: AppColors.lunas,
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isSaving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Gagal update stok: $e'),
+        const SnackBar(
+          content: Text('Akses Ditolak: User biasa hanya memiliki hak akses melihat stok.'),
           backgroundColor: AppColors.error,
         ),
       );
+      return;
     }
+
+    final title = kelompok != null
+        ? 'Reset Penjualan $kelompok'
+        : 'Reset Seluruh Penjualan Hari Ini';
+    final desc = kelompok != null
+        ? 'Counter barang terjual untuk kelompok $kelompok akan kembali ke 0. Kuota sisa stok akan dihitung ulang.'
+        : 'Seluruh counter barang terjual hari ini akan dikembalikan ke 0 untuk semua produk.';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+            const SizedBox(width: 8),
+            Expanded(child: Text(title, style: const TextStyle(fontSize: 16))),
+          ],
+        ),
+        content: Text(desc, style: const TextStyle(fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              try {
+                await StockApiService.resetStockTerjual(
+                  kelompok: kelompok,
+                  userId: _adminSelectedUserId,
+                );
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Counter terjual berhasil direset ke 0!'),
+                      backgroundColor: AppColors.lunas,
+                    ),
+                  );
+                  _loadAllStockData();
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Gagal reset: $e'),
+                      backgroundColor: AppColors.error,
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text('Ya, Reset ke 0'),
+          ),
+        ],
+      ),
+    );
   }
 
+  // ===========================================================================
+  // MODAL: EDIT HARGA MASTER PRODUK
+  // ===========================================================================
+  void _openEditProductDialog(Item item) {
+    if (AuthService.currentUser?.canManageStock != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses Ditolak: User biasa hanya memiliki hak akses melihat stok.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final priceCtrl = TextEditingController(text: item.price.toInt().toString());
+    final nameCtrl = TextEditingController(text: item.name);
+    bool isSaving = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit_note, color: AppColors.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Edit Produk (${item.tyunit})',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Nama Varian:', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(isDense: true),
+                ),
+                const SizedBox(height: 12),
+                const Text('Harga Jual (Rp):', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                TextField(
+                  controller: priceCtrl,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  decoration: const InputDecoration(isDense: true, prefixText: 'Rp '),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.bgSecondary,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, size: 16, color: AppColors.textSecondary),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Kelompok: ${item.kelompok} • Sisa Kuota Fisik: ${item.sisaKuota}',
+                          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: isSaving
+                    ? null
+                    : () async {
+                        final newPrice = int.tryParse(priceCtrl.text.trim()) ?? item.price.toInt();
+                        setDialogState(() => isSaving = true);
+                        try {
+                          await StockApiService.updateMasterProduct(
+                            tyunit: item.tyunit,
+                            name: nameCtrl.text.trim(),
+                            price: newPrice,
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Varian ${item.tyunit} berhasil diperbarui!'),
+                                backgroundColor: AppColors.lunas,
+                              ),
+                            );
+                            _loadAllStockData();
+                          }
+                        } catch (e) {
+                          setDialogState(() => isSaving = false);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Gagal edit: $e'), backgroundColor: AppColors.error),
+                            );
+                          }
+                        }
+                      },
+                child: Text(isSaving ? 'Menyimpan...' : 'Simpan'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // BUILD UI UTAMA
+  // ===========================================================================
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: EdgeInsets.fromLTRB(
-        AppSpacing.screenMargin,
-        AppSpacing.lg,
-        AppSpacing.screenMargin,
-        MediaQuery.of(context).viewInsets.bottom + AppSpacing.xl,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Drag Handle
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.surfaceBorder,
-                borderRadius: BorderRadius.circular(2),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Manajemen Stok & Kuota'),
+            Text(
+              'Stok Awal Fisik & Terjual per Varian',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w400,
+                color: AppColors.textSecondary,
               ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh Stok',
+            onPressed: _loadAllStockData,
+          ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: AppColors.primary,
+          unselectedLabelColor: AppColors.textSecondary,
+          indicatorColor: AppColors.primary,
+          indicatorWeight: 3,
+          tabs: const [
+            Tab(icon: Icon(Icons.inventory_2_outlined, size: 20), text: 'Stok Awal'),
+            Tab(icon: Icon(Icons.point_of_sale_outlined, size: 20), text: 'Stok Terjual'),
+            Tab(icon: Icon(Icons.list_alt_outlined, size: 20), text: 'Master Produk'),
+          ],
+        ),
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                if (_errorMessage != null)
+                  Container(
+                    width: double.infinity,
+                    color: Colors.amber.shade100,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 16, color: Colors.amber.shade900),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: TextStyle(fontSize: 12, color: Colors.amber.shade900),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: TabBarView(
+                    controller: _tabController,
+                    children: [
+                      _buildTabStokAwal(),
+                      _buildTabStokTerjual(),
+                      _buildTabMasterProduk(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  // ===========================================================================
+  // TAB 1: STOK AWAL (KUOTA KOMODITAS FISIK)
+  // ===========================================================================
+  Widget _buildTabStokAwal() {
+    return RefreshIndicator(
+      onRefresh: _loadAllStockData,
+      child: ListView(
+        padding: const EdgeInsets.all(AppSpacing.screenMargin),
+        children: [
+          // Filter Armada (Khusus Admin)
+          if (AuthService.currentUser?.isAdmin == true) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.purple.shade50,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.purple.shade200),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.tune_rounded, size: 16, color: Colors.purple),
+                      SizedBox(width: 8),
+                      Text(
+                        'Monitor Kuota Stok per Armada (Admin):',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.purple,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Semua Armada (Global)'),
+                          selected: _adminSelectedUserId == null,
+                          selectedColor: Colors.purple.shade600,
+                          labelStyle: TextStyle(
+                            color: _adminSelectedUserId == null
+                                ? Colors.white
+                                : Colors.purple.shade800,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                          onSelected: (selected) {
+                            if (selected) {
+                              setState(() => _adminSelectedUserId = null);
+                              _loadAllStockData();
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        ..._salesUsers.map((u) {
+                          final isSel = _adminSelectedUserId == u.id;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: ChoiceChip(
+                              avatar: Icon(
+                                Icons.person,
+                                size: 14,
+                                color: isSel ? Colors.white : Colors.purple,
+                              ),
+                              label: Text(u.name),
+                              selected: isSel,
+                              selectedColor: Colors.purple.shade600,
+                              labelStyle: TextStyle(
+                                color: isSel ? Colors.white : Colors.purple.shade800,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12,
+                              ),
+                              onSelected: (selected) {
+                                setState(() =>
+                                    _adminSelectedUserId = selected ? u.id : null);
+                                _loadAllStockData();
+                              },
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ] else ...[
+            // Banner Read-Only & Isolasi untuk Sales Biasa
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.shield_outlined, color: Colors.blue, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Mode Stok Terisolasi: Anda melihat sisa kuota khusus armada ${AuthService.currentUser?.name ?? "Sales"}. Transaksi Anda tidak mengurangi kuota armada lain.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade900,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+
+          // Banner Panduan Singkat Arsitektur Stok Baru
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.primaryLight.withOpacity(0.5),
+              borderRadius: BorderRadius.circular(AppRadius.card),
+              border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.lightbulb_outline, color: AppColors.primary, size: 24),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Sistem Kuota Komoditas Fisik',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Stok fisik diinput per kelompok komoditas (misal 100 galon). Penjualan seluruh varian harga galon otomatis memotong kuota fisik tersebut.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: AppColors.textPrimary.withOpacity(0.85),
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 16),
 
-          // Header: Produk Info
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppColors.primaryLight,
-                  borderRadius: BorderRadius.circular(6),
-                ),
+          if (_stockGroups.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 40),
+              child: Center(
                 child: Text(
-                  widget.item.tyunit,
+                  'Belum ada data kelompok komoditas di server.',
+                  style: TextStyle(color: AppColors.textSecondary),
+                ),
+              ),
+            )
+          else
+            ..._stockGroups.map((group) => _buildStockGroupCard(group)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStockGroupCard(StockGroup group) {
+    final groupColor = _getGroupColor(group.kelompok);
+    final iconData = _getGroupIcon(group.kelompok);
+    final percent = group.persentaseTersedia;
+
+    Color statusColor;
+    String statusText;
+    if (group.sisaStock <= 0) {
+      statusColor = AppColors.error;
+      statusText = 'HABIS';
+    } else if (percent < 0.2) {
+      statusColor = Colors.orange.shade800;
+      statusText = 'MENIPIS';
+    } else {
+      statusColor = AppColors.lunas;
+      statusText = 'AMAN';
+    }
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.grey.shade200),
+      ),
+      elevation: 1.5,
+      child: Column(
+        children: [
+          // Header Card
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: groupColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(iconData, color: groupColor, size: 24),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            group.displayName,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${group.kelompok} • ${group.jumlahProduk} Varian Harga',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(100),
+                        border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: statusColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            statusText,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: statusColor,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // 3 Metrik Utama: Stok Awal | Terjual | Sisa
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.bgSecondary,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _stockMetricBox(
+                          label: 'Stok Awal',
+                          value: '${group.stockAwal}',
+                          unit: group.unitName,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      Container(width: 1, height: 36, color: Colors.grey.shade300),
+                      Expanded(
+                        child: _stockMetricBox(
+                          label: 'Terjual',
+                          value: '${group.totalTerjual}',
+                          unit: group.unitName,
+                          color: Colors.orange.shade800,
+                        ),
+                      ),
+                      Container(width: 1, height: 36, color: Colors.grey.shade300),
+                      Expanded(
+                        child: _stockMetricBox(
+                          label: 'Sisa Fisik',
+                          value: '${group.sisaStock}',
+                          unit: group.unitName,
+                          color: statusColor,
+                          isBold: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Progress Bar Persentase
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: LinearProgressIndicator(
+                          value: percent,
+                          backgroundColor: Colors.grey.shade200,
+                          valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+                          minHeight: 8,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      '${(percent * 100).toInt()}% Tersedia',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: statusColor,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // Tombol Aksi: Set Kuota Stok Awal (Khusus Admin / canManageStock)
+                if (AuthService.currentUser?.canManageStock == true)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: groupColor,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      icon: const Icon(Icons.add_circle_outline, size: 18),
+                      label: Text(
+                        'Set / Tambah Kuota ${group.unitName}',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      onPressed: () => _openSetStockAwalDialog(group),
+                    ),
+                  )
+                else
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 11, horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.lock_outline,
+                            size: 16, color: Colors.grey.shade600),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Akses Read-Only • Kuota Diatur Administrator',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Accordion / Rincian Varian Produk di Dalam Kelompok Ini
+          if (group.rincianProduk.isNotEmpty) ...[
+            const Divider(height: 1),
+            Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                title: Text(
+                  'Lihat ${group.rincianProduk.length} Varian Harga & Penjualan',
                   style: const TextStyle(
                     fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.primary,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  widget.item.name,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: AppColors.textPrimary,
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Stok saat ini di sistem: ${widget.item.stock} unit',
-            style: const TextStyle(
-              fontSize: 13,
-              color: AppColors.textSecondary,
-            ),
-          ),
-
-          const SizedBox(height: AppSpacing.lg),
-
-          // Segmented Switch Mode
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(AppRadius.input),
-              border: Border.all(color: AppColors.surfaceBorder),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => setState(() => _modeIndex = 0),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _modeIndex == 0
-                            ? AppColors.surface
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: _modeIndex == 0 ? AppShadow.card : null,
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'Tambah Stok (+)',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: _modeIndex == 0
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: _modeIndex == 0
-                              ? AppColors.primary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
+                children: [
+                  Container(
+                    color: AppColors.bgSecondary.withOpacity(0.5),
+                    child: Column(
+                      children: group.rincianProduk.map((v) {
+                        final currencyFormat = NumberFormat.currency(
+                          locale: 'id_ID',
+                          symbol: 'Rp ',
+                          decimalDigits: 0,
+                        );
+                        return ListTile(
+                          dense: true,
+                          leading: CircleAvatar(
+                            radius: 14,
+                            backgroundColor: groupColor.withOpacity(0.15),
+                            child: Text(
+                              v.tyunit.replaceAll('BV', ''),
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: groupColor,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            v.namaProduk,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${v.tyunit} • ${currencyFormat.format(v.harga)}',
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: v.terjual > 0 ? Colors.green.shade50 : Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: v.terjual > 0 ? Colors.green.shade300 : Colors.grey.shade300,
+                              ),
+                            ),
+                            child: Text(
+                              'Terjual: ${v.terjual}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: v.terjual > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
                     ),
                   ),
-                ),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => setState(() {
-                      _modeIndex = 1;
-                      _inputCtrl.text = widget.item.stock.toString();
-                    }),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _modeIndex == 1
-                            ? AppColors.surface
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: _modeIndex == 1 ? AppShadow.card : null,
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'Set Total Stok',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: _modeIndex == 1
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          color: _modeIndex == 1
-                              ? AppColors.primary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+          ],
+        ],
+      ),
+    );
+  }
 
-          const SizedBox(height: AppSpacing.lg),
+  // ===========================================================================
+  // TAB 2: STOK TERJUAL (AKUMULASI PENJUALAN PER VARIAN)
+  // ===========================================================================
+  Widget _buildTabStokTerjual() {
+    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
+    final totalTerjualSemua = _terjualData['total_terjual_keseluruhan'] ?? 0;
+    final List items = (_terjualData['items'] as List?) ?? [];
 
-          // Input Quantity with Steppers
-          Row(
-            children: [
-              IconButton.outlined(
-                onPressed: () => _addQuick(-1),
-                icon: const Icon(Icons.remove),
-                style: IconButton.styleFrom(
-                  minimumSize: const Size(48, 48),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: _inputCtrl,
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textPrimary,
-                  ),
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  decoration: InputDecoration(
-                    labelText: _modeIndex == 0
-                        ? 'Jumlah Masuk (pcs)'
-                        : 'Total Stok Fisik',
-                    floatingLabelAlignment: FloatingLabelAlignment.center,
-                  ),
-                  onChanged: (_) => setState(() {}),
-                ),
-              ),
-              const SizedBox(width: 12),
-              IconButton.outlined(
-                onPressed: () => _addQuick(1),
-                icon: const Icon(Icons.add),
-                style: IconButton.styleFrom(
-                  minimumSize: const Size(48, 48),
-                ),
-              ),
-            ],
-          ),
+    final filteredItems = _selectedTerjualKelompok == 'ALL'
+        ? items
+        : items.where((i) => i['kelompok'] == _selectedTerjualKelompok).toList();
 
-          const SizedBox(height: 12),
-
-          // Quick Chips
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _quickChip('+10', () => _addQuick(10)),
-                const SizedBox(width: 8),
-                _quickChip('+25', () => _addQuick(25)),
-                const SizedBox(width: 8),
-                _quickChip('+50', () => _addQuick(50)),
-                const SizedBox(width: 8),
-                _quickChip('+100', () => _addQuick(100)),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: AppSpacing.lg),
-
-          // Calculation Preview Card
+    return RefreshIndicator(
+      onRefresh: _loadAllStockData,
+      child: ListView(
+        padding: const EdgeInsets.all(AppSpacing.screenMargin),
+        children: [
+          // Banner Total Terjual Hari Ini
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(AppRadius.input),
-              border: Border.all(color: AppColors.surfaceBorder),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF1E88E5), Color(0xFF1565C0)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(AppRadius.card),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1094,90 +1270,323 @@ class _StockInputSheetState extends State<_StockInputSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Hasil Akhir Stok',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                        fontWeight: FontWeight.w500,
+                      'Total Terjual Hari Ini',
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$totalTerjualSemua Unit',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
-                    Text(
-                      _modeIndex == 0
-                          ? '${widget.item.stock} + $_parsedInput'
-                          : 'Stok Langsung Diubah',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: AppColors.textSecondary,
-                      ),
+                    const SizedBox(height: 2),
+                    const Text(
+                      'Akumulasi seluruh varian Boneva',
+                      style: TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                   ],
                 ),
-                Text(
-                  '$_calculatedNewStock unit',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.primary,
+                if (AuthService.currentUser?.canManageStock == true)
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: const BorderSide(color: Colors.white70),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                    icon: const Icon(Icons.restart_alt, size: 18),
+                    label: const Text('Reset Hari Ini'),
+                    onPressed: () => _confirmResetTerjual(),
                   ),
-                ),
               ],
             ),
           ),
+          const SizedBox(height: 16),
 
-          const SizedBox(height: AppSpacing.xl),
-
-          // Save Button
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _isSaving ? null : _handleSave,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(AppRadius.button),
-                ),
-              ),
-              child: _isSaving
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text(
-                      'Simpan Stok',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
+          // Filter Tab Kelompok
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _filterChip('Semua Komoditas', 'ALL'),
+                _filterChip('Galon', 'GALON'),
+                _filterChip('Botol 600ml', 'BOTOL_600'),
+                _filterChip('Botol 1.5L', 'BOTOL_1500'),
+                _filterChip('Gelas', 'GELAS'),
+              ],
             ),
           ),
+          const SizedBox(height: 12),
+
+          // Daftar Produk Terjual
+          if (filteredItems.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 40),
+              child: Center(
+                child: Text('Belum ada data barang terjual.', style: TextStyle(color: AppColors.textSecondary)),
+              ),
+            )
+          else
+            ...filteredItems.map((item) {
+              final terjual = item['terjual'] ?? 0;
+              final harga = item['harga'] ?? 0;
+              final omzet = terjual * harga;
+              final kelompok = item['kelompok'] ?? '';
+              final color = _getGroupColor(kelompok);
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: color.withOpacity(0.12),
+                    child: Text(
+                      item['tyunit']?.toString().replaceAll('BV', '') ?? '',
+                      style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  title: Text(
+                    item['nama_produk']?.toString() ?? '',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                  ),
+                  subtitle: Text(
+                    '${item['tyunit']} • ${currencyFormat.format(harga)} / unit',
+                    style: const TextStyle(fontSize: 11.5),
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        '$terjual terjual',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                          color: terjual > 0 ? Colors.green.shade800 : AppColors.textSecondary,
+                        ),
+                      ),
+                      if (terjual > 0)
+                        Text(
+                          currencyFormat.format(omzet),
+                          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            }),
         ],
       ),
     );
   }
 
-  Widget _quickChip(String label, VoidCallback onTap) {
-    return ActionChip(
-      label: Text(
-        label,
-        style: const TextStyle(
+  Widget _filterChip(String label, String code) {
+    final isSelected = _selectedTerjualKelompok == code;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: isSelected,
+        selectedColor: AppColors.primary,
+        labelStyle: TextStyle(
+          color: isSelected ? Colors.white : AppColors.textPrimary,
+          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
-          color: AppColors.primary,
         ),
+        onSelected: (val) {
+          if (val) setState(() => _selectedTerjualKelompok = code);
+        },
       ),
-      backgroundColor: AppColors.primaryLight,
-      side: const BorderSide(color: AppColors.primaryLight),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.chipFull),
-      ),
-      onPressed: onTap,
     );
+  }
+
+  // ===========================================================================
+  // TAB 3: MASTER 13 PRODUK
+  // ===========================================================================
+  Widget _buildTabMasterProduk() {
+    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
+
+    return Column(
+      children: [
+        // Search Bar
+        Padding(
+          padding: const EdgeInsets.all(AppSpacing.screenMargin),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: InputDecoration(
+              hintText: 'Cari produk atau kode unit (misal: BV01, Galon)...',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: _searchCtrl.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _searchCtrl.clear();
+                        _applyProductFilter();
+                      },
+                    )
+                  : null,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ),
+
+        // List Produk
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _loadAllStockData,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.screenMargin),
+              itemCount: _filteredProducts.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (ctx, idx) {
+                final item = _filteredProducts[idx];
+                final color = _getGroupColor(item.kelompok);
+
+                return Card(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 1,
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: color.withOpacity(0.12),
+                      child: Text(
+                        item.tyunit.replaceAll('BV', ''),
+                        style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    title: Text(
+                      item.name,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                    ),
+                    subtitle: Text(
+                      '${item.tyunit} • Kelompok: ${item.kelompok}\nSisa Kuota: ${item.sisaKuota} | Terjual: ${item.terjual}',
+                      style: const TextStyle(fontSize: 11.5, height: 1.3),
+                    ),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          currencyFormat.format(item.price),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13.5,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        if (AuthService.currentUser?.canManageStock == true) ...[
+                          const SizedBox(height: 2),
+                          InkWell(
+                            onTap: () => _openEditProductDialog(item),
+                            child: const Text(
+                              'Edit Harga',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.blue,
+                                fontWeight: FontWeight.w600,
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    onTap: AuthService.currentUser?.canManageStock == true
+                        ? () => _openEditProductDialog(item)
+                        : null,
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ===========================================================================
+  // HELPER WIDGETS & COLORS
+  // ===========================================================================
+  Widget _stockMetricBox({
+    required String label,
+    required String value,
+    required String unit,
+    required Color color,
+    bool isBold = false,
+  }) {
+    return Column(
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 2),
+        RichText(
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          text: TextSpan(
+            text: value,
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: isBold ? FontWeight.w900 : FontWeight.w700,
+              color: color,
+            ),
+            children: [
+              TextSpan(
+                text: ' $unit',
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _miniStat(String label, String value, String unit) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+        const SizedBox(height: 2),
+        Text('$value $unit', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+
+  Color _getGroupColor(String kelompok) {
+    switch (kelompok.toUpperCase()) {
+      case 'GALON':
+        return const Color(0xFF0288D1); // Light Blue / Cyan Ocean
+      case 'BOTOL_600':
+        return const Color(0xFF00897B); // Teal
+      case 'BOTOL_1500':
+        return const Color(0xFF5E35B1); // Deep Purple
+      case 'GELAS':
+        return const Color(0xFFE65100); // Amber / Deep Orange
+      default:
+        return AppColors.primary;
+    }
+  }
+
+  IconData _getGroupIcon(String kelompok) {
+    switch (kelompok.toUpperCase()) {
+      case 'GALON':
+        return Icons.water_drop_outlined;
+      case 'BOTOL_600':
+        return Icons.local_drink_outlined;
+      case 'BOTOL_1500':
+        return Icons.wine_bar_outlined;
+      case 'GELAS':
+        return Icons.crop_square_outlined;
+      default:
+        return Icons.inventory_2_outlined;
+    }
   }
 }

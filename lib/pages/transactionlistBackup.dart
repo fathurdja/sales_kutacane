@@ -6,7 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/daily_closing_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
@@ -40,12 +43,32 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
   bool _isProcessing = false;
   int _pendingOfflineCount = 0;
   bool _isSyncing = false;
+  UserModel? _currentUser;
+  List<UserModel> _salesUsers = [];
+  int? _selectedSalesUserId;
 
   @override
   void initState() {
     super.initState();
+    _loadUserAndSales();
     fetchTransactions();
     _searchCtrl.addListener(_applyFilter);
+  }
+
+  Future<void> _loadUserAndSales() async {
+    final user = await AuthService.getCurrentUser();
+    if (!mounted) return;
+    setState(() => _currentUser = user);
+
+    if (user != null && user.isUserAdmin) {
+      try {
+        final users = await AuthService.fetchUsers();
+        if (!mounted) return;
+        setState(() => _salesUsers = users);
+      } catch (e) {
+        debugPrint('Error fetching sales users: $e');
+      }
+    }
   }
 
   @override
@@ -55,7 +78,10 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
   }
 
   Future<void> fetchTransactions() async {
-    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    String url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    if (_selectedSalesUserId != null) {
+      url = '$url?user_id=$_selectedSalesUserId';
+    }
     setState(() => _isLoading = true);
 
     // 1. Ambil antrean transaksi offline dari penyimpanan lokal HP
@@ -70,12 +96,13 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
       debugPrint('Error membaca offline queue: $e');
     }
 
-    // 2. Ambil dari server
+    // 2. Ambil dari server dengan Bearer token
     try {
+      final headers = await AuthService.getAuthHeaders();
       final response = await http
           .get(
             Uri.parse(url),
-            headers: {'Accept': 'application/json'},
+            headers: headers,
           )
           .timeout(const Duration(seconds: 8));
 
@@ -249,7 +276,8 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
       builder: (ctx) => AlertDialog(
         title: const Text('Hapus Transaksi?'),
         content: Text(
-          'Apakah Anda yakin ingin menghapus nota ${trx.id_transaksi} atas nama ${trx.customerName}?',
+          'Apakah Anda yakin ingin menghapus nota ${trx.id_transaksi} atas nama ${trx.customerName}?\n\n'
+          'Stok produk pada nota ini akan otomatis dikembalikan ke kuota master.',
         ),
         actions: [
           TextButton(
@@ -267,35 +295,41 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
 
     if (confirm != true) return;
 
-    final id = trx.id;
-    try {
-      // Coba hapus via Laravel API atau fallback ke MockAPI
-      final url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi/$id';
-      final response = await http.delete(Uri.parse(url));
+    final id = trx.id_transaksi.isNotEmpty ? trx.id_transaksi : trx.id;
+    setState(() => _isProcessing = true);
 
-      if (response.statusCode == 200 || response.statusCode == 204) {
-        setState(() {
-          _transactions.removeWhere((t) => t.id == id);
-        });
-        _applyFilter();
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Transaksi berhasil dihapus')),
-        );
+    try {
+      if (trx.isOffline) {
+        await OfflineSyncService.removePendingTransaction(id);
       } else {
-        // Fallback MockAPI jika endpoint Laravel belum ada
-        final fallbackUrl =
-            'http://6873b63ec75558e273550195.mockapi.io/transaksi/$id';
-        await http.delete(Uri.parse(fallbackUrl));
-        setState(() {
-          _transactions.removeWhere((t) => t.id == id);
-        });
-        _applyFilter();
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Transaksi berhasil dihapus')),
-        );
+        // Hapus via Laravel API dengan Auth Header
+        final url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi/$id';
+        final authHeaders = await AuthService.getAuthHeaders();
+        final response = await http.delete(
+          Uri.parse(url),
+          headers: authHeaders,
+        ).timeout(const Duration(seconds: 8));
+
+        // Bersihkan juga jika ada sisa duplikat di offline queue
+        await OfflineSyncService.removePendingTransaction(id);
+
+        if (response.statusCode != 200 && response.statusCode != 204) {
+          throw Exception('Server mengembalikan kode: ${response.statusCode}');
+        }
       }
+
+      setState(() {
+        _transactions.removeWhere((t) => t.id_transaksi == id || t.id == id);
+      });
+      _applyFilter();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nota $id berhasil dihapus'),
+          backgroundColor: AppColors.lunas,
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -304,6 +338,8 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
           backgroundColor: AppColors.error,
         ),
       );
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
     }
   }
 
@@ -381,64 +417,346 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
     }
   }
 
-  Future<void> _confirmDeleteAll() async {
-    final count = _transactions.length;
-    if (count == 0) return;
-
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Hapus Semua Transaksi?'),
-        content: Text(
-          'Tindakan ini akan menghapus seluruh $count nota transaksi dari sistem secara permanen. '
-          'Pastikan Anda sudah mengarsipkan data ke CSV terlebih dahulu.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: Text('Hapus $count Nota'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true) return;
-
+  Future<void> _showDailyClosingDialog() async {
     setState(() => _isProcessing = true);
+    DailyClosingPreview preview;
     try {
-      // Hapus di mockapi jika digunakan
-      const url = 'http://6873b63ec75558e273550195.mockapi.io/transaksi';
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final List data = jsonDecode(response.body);
-        for (var trx in data) {
-          final deleteUrl = "$url/${trx['id']}";
-          await http.delete(Uri.parse(deleteUrl));
-        }
-      }
-
-      setState(() {
-        _transactions.clear();
-        _filteredTransactions.clear();
-      });
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Semua transaksi berhasil dihapus')),
-      );
+      preview = await DailyClosingService.getClosingPreview(_transactions);
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal menghapus data: $e')),
+      preview = DailyClosingPreview(
+        totalTransactions: _transactions.length,
+        totalRevenue: _transactions.fold(0.0, (acc, t) => acc + t.total),
+        stockItems: [],
       );
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
+
+    if (!mounted) return;
+
+    bool rolloverStock = true;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.event_repeat_rounded, color: AppColors.primary),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tutup Buku Harian',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          'Arsip & Rollover Stok Besok',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Summary Nota
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.receipt_long, color: Colors.blue, size: 28),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${preview.totalTransactions} Nota Transaksi Hari Ini',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                ),
+                                Text(
+                                  'Total Omzet: Rp ${NumberFormat('#,###', 'id_ID').format(preview.totalRevenue.toInt())}',
+                                  style: TextStyle(color: Colors.blue.shade800, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Point 1: Auto Archive
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.check_circle_outline, color: Colors.green, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Transaksi hari ini otomatis diarsipkan ke CSV (tersimpan aman di menu Arsip).',
+                            style: TextStyle(fontSize: 13, color: Colors.grey.shade800),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Point 2: Rollover Stock Header & Table
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.inventory_2_outlined, color: AppColors.primary, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Stok awal besok otomatis diset dari sisa stok hari ini:',
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+
+                    if (preview.stockItems.isNotEmpty)
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Column(
+                          children: preview.stockItems.map((item) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    item.label,
+                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                                  ),
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'Sisa: ${item.sisaStockHariIni}',
+                                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                      ),
+                                      const Icon(Icons.arrow_right_alt, size: 16, color: Colors.grey),
+                                      Text(
+                                        'Besok: ${item.stockAwalBesok}',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.only(left: 28),
+                        child: Text(
+                          '(Stok server akan dicek saat proses berlangsung)',
+                          style: TextStyle(fontSize: 12, color: Colors.grey.shade500, fontStyle: FontStyle.italic),
+                        ),
+                      ),
+
+                    const SizedBox(height: 12),
+
+                    // Checkbox Rollover
+                    Container(
+                      decoration: BoxDecoration(
+                        color: rolloverStock ? Colors.green.shade50 : Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: rolloverStock ? Colors.green.shade300 : Colors.grey.shade300,
+                        ),
+                      ),
+                      child: CheckboxListTile(
+                        value: rolloverStock,
+                        onChanged: (val) {
+                          setDialogState(() {
+                            rolloverStock = val ?? true;
+                          });
+                        },
+                        title: const Text(
+                          'Rollover Stok Otomatis',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: const Text(
+                          'Sisa stok jadi stok awal besok & reset counter penjualan ke 0',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        activeColor: Colors.green.shade700,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                        controlAffinity: ListTileControlAffinity.leading,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Setelah proses ini selesai, daftar transaksi kasir hari ini akan bersih untuk siap digunakan esok hari.',
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontStyle: FontStyle.italic),
+                    ),
+                  ],
+                ),
+              ),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Batal'),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.check_circle_outline, size: 18),
+                  label: const Text('Proses Tutup Buku'),
+                  onPressed: () => Navigator.pop(ctx, true),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    // Eksekusi Tutup Buku & Rollover
+    setState(() => _isProcessing = true);
+    try {
+      final result = await DailyClosingService.executeDailyClosing(
+        transactions: _transactions,
+        rolloverStock: rolloverStock,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        setState(() {
+          _transactions.clear();
+          _filteredTransactions.clear();
+        });
+
+        // Dialog Sukses
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.task_alt, color: Colors.green, size: 28),
+                SizedBox(width: 10),
+                Text('Tutup Buku Berhasil!'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '1. ${result.totalTransactionsArchived} nota transaksi telah berhasil disimpan ke arsip.',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Berkas: ${result.archiveFileName}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700, fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 10),
+                if (rolloverStock) ...[
+                  const Text(
+                    '2. Stok awal besok telah diset dari sisa stok hari ini:',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  ...result.rolloverItems.map(
+                    (it) => Padding(
+                      padding: const EdgeInsets.only(left: 12, bottom: 2),
+                      child: Text(
+                        '• ${it.label}: ${it.stockAwalBesok} unit (Sisa ${it.sisaStockHariIni})',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Counter penjualan harian telah direset ke 0.',
+                    style: TextStyle(fontSize: 12, color: Colors.green, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Selesai'),
+              ),
+            ],
+          ),
+        );
+
+        // Muat ulang daftar transaksi
+        fetchTransactions();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Tutup buku gagal: ${result.errorMessage ?? "Terjadi kesalahan"}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Terjadi kesalahan: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _confirmDeleteAll() async {
+    await _showDailyClosingDialog();
   }
 
   @override
@@ -455,13 +773,28 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
-              if (value == 'export') {
+              if (value == 'closing') {
+                _showDailyClosingDialog();
+              } else if (value == 'export') {
                 _exportToCSV();
               } else if (value == 'deleteAll') {
                 _confirmDeleteAll();
               }
             },
             itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'closing',
+                child: Row(
+                  children: [
+                    Icon(Icons.event_repeat_rounded, size: 20, color: AppColors.primary),
+                    SizedBox(width: 10),
+                    Text(
+                      'Tutup Buku & Rollover Stok',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'export',
                 child: Row(
@@ -527,6 +860,51 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
                           ),
                         ),
                         const SizedBox(height: 12),
+
+                        // Filter Khusus Admin: Pilih Sales Armada
+                        if (_currentUser?.isUserAdmin == true && _salesUsers.isNotEmpty) ...[
+                          Row(
+                            children: [
+                              const Icon(Icons.people_alt_outlined, size: 16, color: AppColors.primary),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Filter Sales Armada:',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textSecondary),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                ChoiceChip(
+                                  label: const Text('Semua Sales'),
+                                  selected: _selectedSalesUserId == null,
+                                  onSelected: (_) {
+                                    setState(() => _selectedSalesUserId = null);
+                                    fetchTransactions();
+                                  },
+                                ),
+                                const SizedBox(width: 6),
+                                ..._salesUsers.where((u) => !u.isAdmin).map((u) {
+                                  return Padding(
+                                    padding: const EdgeInsets.only(right: 6),
+                                    child: ChoiceChip(
+                                      label: Text(u.name),
+                                      selected: _selectedSalesUserId == u.id,
+                                      onSelected: (_) {
+                                        setState(() => _selectedSalesUserId = u.id);
+                                        fetchTransactions();
+                                      },
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
 
                         // Quick Filter Chips Row
                         SingleChildScrollView(

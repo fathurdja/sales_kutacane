@@ -2,11 +2,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 
@@ -22,6 +25,7 @@ class HomePage extends StatefulWidget {
 class HomePageState extends State<HomePage> {
   bool _loading = true;
   List<Transaction> _todayTransactions = [];
+  List<StockGroup> _stockGroups = [];
   String? _errorMessage;
   int _pendingOfflineCount = 0;
   bool _isSyncing = false;
@@ -56,11 +60,12 @@ class HomePageState extends State<HomePage> {
       debugPrint('Error membaca transaksi offline: $e');
     }
 
-    // 2. Ambil transaksi dari server utama
+    // 2. Ambil transaksi dari server utama dengan Auth Header (terisolasi per user)
     try {
+      final authHeaders = await AuthService.getAuthHeaders();
       final response = await http.get(
         Uri.parse('https://laravel.fathurrzqn8n.web.id/api/transaksi'),
-        headers: {'Accept': 'application/json'},
+        headers: authHeaders,
       ).timeout(const Duration(seconds: 6));
 
       if (response.statusCode == 200) {
@@ -90,6 +95,14 @@ class HomePageState extends State<HomePage> {
           _todayTransactions = merged;
           _loading = false;
         });
+
+        // Muat ringkasan kuota komoditas fisik dari backend baru
+        try {
+          final groups = await StockApiService.fetchStockSummary();
+          if (mounted) {
+            setState(() => _stockGroups = groups);
+          }
+        } catch (_) {}
       } else {
         throw Exception('Server error (${response.statusCode})');
       }
@@ -170,14 +183,23 @@ class HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: AppSpacing.screenMargin,
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Sales Kencana'),
-            Text(
-              'Kencana Cahaya Amanah',
+            const Text(
+              'Sales Kencana',
               style: TextStyle(
-                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                fontSize: 18,
+                letterSpacing: -0.3,
+              ),
+            ),
+            Text(
+              DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(DateTime.now()),
+              style: const TextStyle(
+                fontSize: 12,
                 fontWeight: FontWeight.w400,
                 color: AppColors.textSecondary,
               ),
@@ -186,31 +208,52 @@ class HomePageState extends State<HomePage> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.help_outline),
-            tooltip: 'Panduan Pengguna & Alur Kasir',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const GuidePage()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.inventory_2_outlined),
-            tooltip: 'Input & Kelola Stok',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const StockInputPage()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'Buat Nota Baru',
-            onPressed: widget.onCreateNota,
-          ),
-          IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: 'Segarkan data',
             onPressed: fetchTodayTransactions,
-            tooltip: 'Refresh data',
           ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'Menu Cepat',
+            onSelected: (val) {
+              if (val == 'stock') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const StockInputPage()),
+                );
+              } else if (val == 'guide') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const GuidePage()),
+                );
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'stock',
+                child: Row(
+                  children: [
+                    Icon(Icons.inventory_2_outlined,
+                        size: 20, color: AppColors.primary),
+                    SizedBox(width: 10),
+                    Text('Manajemen Stok'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'guide',
+                child: Row(
+                  children: [
+                    Icon(Icons.help_outline,
+                        size: 20, color: AppColors.textSecondary),
+                    SizedBox(width: 10),
+                    Text('Panduan Kasir'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 4),
         ],
       ),
       body: RefreshIndicator(
@@ -222,10 +265,127 @@ class HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildUserHeaderCard() {
+    final user = AuthService.currentUser;
+    if (user == null) return const SizedBox.shrink();
+
+    final isAdmin = user.isAdmin;
+    final accentColor = isAdmin ? Colors.purple : AppColors.primary;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: accentColor.withValues(alpha: 0.2)),
+        boxShadow: AppShadow.card,
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 20,
+            backgroundColor: accentColor.withValues(alpha: 0.12),
+            child: Icon(
+              isAdmin
+                  ? Icons.admin_panel_settings_rounded
+                  : Icons.person_rounded,
+              color: accentColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        user.name,
+                        style: const TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: accentColor.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: accentColor.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Text(
+                        isAdmin ? 'ADMIN' : 'SALES ARMADA',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800,
+                          color: accentColor,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  isAdmin
+                      ? 'Hak Akses Stok: Full Access (Semua Sales)'
+                      : 'Hak Akses Stok: Terisolasi (Armada ${user.name})',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: isAdmin
+                        ? Colors.purple.shade700
+                        : AppColors.textSecondary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          InkWell(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const StockInputPage()),
+            ),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.all(7),
+              decoration: BoxDecoration(
+                color: AppColors.bgSecondary,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.surfaceBorder),
+              ),
+              child: const Icon(
+                Icons.inventory_2_outlined,
+                size: 18,
+                color: AppColors.primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildContent(NumberFormat currencyFormat, DateFormat dateFormat) {
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.screenMargin),
       children: [
+        // Kartu Profil & Status Pengguna (Rapi & Tidak Tertimpa)
+        _buildUserHeaderCard(),
+
         // Kartu ringkasan omzet
         OmzetSummaryCard(
           totalOmzet: _totalOmzet,
@@ -233,6 +393,10 @@ class HomePageState extends State<HomePage> {
           jumlahBon: _jumlahBon,
           formattedOmzet: currencyFormat.format(_totalOmzet),
         ),
+        const SizedBox(height: AppSpacing.md),
+
+        // Status Kuota Komoditas Fisik
+        _buildCommodityGlance(),
         const SizedBox(height: AppSpacing.md),
 
         // Banner Antrean Offline (Jika ada nota yang tersimpan di HP)
@@ -533,5 +697,160 @@ class HomePageState extends State<HomePage> {
         const SizedBox(height: 80),
       ],
     );
+  }
+
+  Widget _buildCommodityGlance() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.inventory_2_outlined, size: 18, color: AppColors.primary),
+                  SizedBox(width: 8),
+                  Text(
+                    'Sisa Kuota Komoditas Fisik',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              InkWell(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const StockInputPage()),
+                ).then((_) => fetchTodayTransactions()),
+                child: const Text(
+                  'Kelola Stok >',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_stockGroups.isEmpty)
+            Row(
+              children: [
+                _miniGlanceItem('Galon', Icons.water_drop_outlined, const Color(0xFF0288D1), '-'),
+                const SizedBox(width: 8),
+                _miniGlanceItem('Btl 600', Icons.local_drink_outlined, const Color(0xFF00897B), '-'),
+                const SizedBox(width: 8),
+                _miniGlanceItem('Btl 1.5L', Icons.wine_bar_outlined, const Color(0xFF5E35B1), '-'),
+                const SizedBox(width: 8),
+                _miniGlanceItem('Gelas', Icons.crop_square_outlined, const Color(0xFFE65100), '-'),
+              ],
+            )
+          else
+            Row(
+              children: _stockGroups.map((g) {
+                final isLast = g.kelompok == _stockGroups.last.kelompok;
+                final color = _getGroupColor(g.kelompok);
+                final icon = _getGroupIcon(g.kelompok);
+                final sisa = '${g.sisaStock}';
+                return Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.only(right: isLast ? 0 : 8),
+                    child: _miniGlanceItem(
+                      _shortGroupName(g.kelompok),
+                      icon,
+                      color,
+                      sisa,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniGlanceItem(String title, IconData icon, Color color, String sisa) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: const TextStyle(fontSize: 10, color: AppColors.textSecondary, fontWeight: FontWeight.w500),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            sisa,
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _shortGroupName(String k) {
+    switch (k.toUpperCase()) {
+      case 'GALON':
+        return 'Galon';
+      case 'BOTOL_600':
+        return 'Btl 600';
+      case 'BOTOL_1500':
+        return 'Btl 1.5L';
+      case 'GELAS':
+        return 'Gelas';
+      default:
+        return k;
+    }
+  }
+
+  Color _getGroupColor(String k) {
+    switch (k.toUpperCase()) {
+      case 'GALON':
+        return const Color(0xFF0288D1);
+      case 'BOTOL_600':
+        return const Color(0xFF00897B);
+      case 'BOTOL_1500':
+        return const Color(0xFF5E35B1);
+      case 'GELAS':
+        return const Color(0xFFE65100);
+      default:
+        return AppColors.primary;
+    }
+  }
+
+  IconData _getGroupIcon(String k) {
+    switch (k.toUpperCase()) {
+      case 'GALON':
+        return Icons.water_drop_outlined;
+      case 'BOTOL_600':
+        return Icons.local_drink_outlined;
+      case 'BOTOL_1500':
+        return Icons.wine_bar_outlined;
+      case 'GELAS':
+        return Icons.crop_square_outlined;
+      default:
+        return Icons.inventory_2_outlined;
+    }
   }
 }

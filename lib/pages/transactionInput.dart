@@ -6,12 +6,22 @@ import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
+import 'package:kasir_kutacane/pages/stock_input_page.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
+import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+class StockQuotaException implements Exception {
+  final String message;
+  StockQuotaException(this.message);
+  @override
+  String toString() => message;
+}
 
 enum SaveDestination {
   primaryServer,
@@ -112,58 +122,16 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     setState(() => _isLoadingProducts = true);
 
     try {
-      // 1. Ambil master-stocks (untuk list unit produk)
-      const msUrl = 'https://laravel.fathurrzqn8n.web.id/api/master-stocks';
-      final msRes = await http
-          .get(Uri.parse(msUrl), headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 6));
-
-      // 2. Ambil products (untuk data stok produk aktif)
-      const prodUrl = 'https://laravel.fathurrzqn8n.web.id/api/products';
-      final prodRes = await http
-          .get(Uri.parse(prodUrl), headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 6));
-
-      Map<String, int> stockFromProducts = {};
-      if (prodRes.statusCode == 200) {
-        final List<dynamic> prodData = jsonDecode(prodRes.body);
-        for (var p in prodData) {
-          final id = (p['id'] as num?)?.toInt() ?? 0;
-          final tyunit = 'BV${id.toString().padLeft(2, '0')}';
-          final stock = (p['stock'] as num?)?.toInt() ?? 0;
-          stockFromProducts[tyunit] = stock;
-        }
-      }
-
-      if (msRes.statusCode == 200) {
-        final body = jsonDecode(msRes.body);
-        List data = [];
-        if (body is Map && body.containsKey('data')) {
-          data = body['data'];
-        } else if (body is List) {
-          data = body;
-        }
-
-        final items = data.map<Item>((e) {
-          final item = Item.fromJson(e);
-          final activeStock = stockFromProducts[item.tyunit] ?? item.stock;
-          return Item(
-            tyunit: item.tyunit,
-            name: item.name,
-            price: item.price,
-            stock: activeStock,
-          );
-        }).toList();
-
-        if (items.isNotEmpty) {
-          await OfflineSyncService.cacheProducts(items);
-          if (!mounted) return;
-          setState(() {
-            _products = items;
-            _isLoadingProducts = false;
-          });
-          return;
-        }
+      // Ambil daftar 13 produk lengkap dengan sisa kuota komoditas terbaru dari backend
+      final items = await StockApiService.fetchProducts();
+      if (items.isNotEmpty) {
+        await OfflineSyncService.cacheProducts(items);
+        if (!mounted) return;
+        setState(() {
+          _products = items;
+          _isLoadingProducts = false;
+        });
+        return;
       }
     } catch (e) {
       debugPrint("Koneksi server gagal/offline, memuat cache produk lokal: $e");
@@ -288,13 +256,11 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
 
     // 1. Coba kirim langsung ke Server Utama (Laravel)
     try {
+      final headers = await AuthService.getAuthHeaders();
       final response = await http
           .post(
             Uri.parse(url),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: headers,
             body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 8));
@@ -313,11 +279,20 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
         }
       } catch (_) {}
 
-      // Server utama merespon error / kendala stok. Jangan rethrow dan memblokir kasir;
-      // lakukan failover otomatis ke Supabase atau Local Offline Queue.
+      // Jika kuota stok komoditas fisik kurang (HTTP 400), jangan failover ke offline!
+      // Kasir harus diberi peringatan kuota secara transparan.
+      if (response.statusCode == 400 ||
+          errorMessage.toLowerCase().contains('kuota') ||
+          errorMessage.toLowerCase().contains('melebihi')) {
+        throw StockQuotaException(errorMessage);
+      }
+
       debugPrint("Server utama merespon error ($errorMessage). Melakukan failover...");
       throw Exception(errorMessage);
     } catch (e) {
+      if (e is StockQuotaException) {
+        rethrow;
+      }
       debugPrint("Server utama gagal ($e). Mencoba ke Supabase...");
       // 2. Coba simpan ke server cadangan Supabase jika online
       try {
@@ -352,22 +327,39 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       bool changed = false;
       for (final item in items) {
         final tyunit = _resolveTyunit(item);
-        final idx = cached.indexWhere(
+        final matchedItem = cached.firstWhere(
           (p) =>
               p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
-              p.name.toLowerCase() == item.name.toLowerCase(),
+              p.name.toLowerCase() == item.nameController.text.toLowerCase(),
+          orElse: () => Item(tyunit: '', name: '', price: 0),
         );
-        if (idx != -1) {
+
+        if (matchedItem.tyunit.isNotEmpty) {
           final totalDeducted = item.quantity + item.bonus;
-          final updatedStock =
-              (cached[idx].stock - totalDeducted).clamp(0, 999999);
-          cached[idx] = Item(
-            tyunit: cached[idx].tyunit,
-            name: cached[idx].name,
-            price: cached[idx].price,
-            stock: updatedStock,
-          );
-          changed = true;
+          final targetKelompok = matchedItem.kelompok;
+
+          // Kurangi kuota seluruh item yang memiliki kelompok komoditas sama
+          for (int i = 0; i < cached.length; i++) {
+            if (cached[i].tyunit == matchedItem.tyunit ||
+                (targetKelompok.isNotEmpty && cached[i].kelompok == targetKelompok)) {
+              final newStock = (cached[i].stock - totalDeducted).clamp(0, 999999);
+              final newSisa = (cached[i].sisaKuota - totalDeducted).clamp(0, 999999);
+              final newTerjual = cached[i].terjual +
+                  (cached[i].tyunit == matchedItem.tyunit ? totalDeducted : 0);
+
+              cached[i] = Item(
+                tyunit: cached[i].tyunit,
+                name: cached[i].name,
+                price: cached[i].price,
+                stock: newStock,
+                kelompok: cached[i].kelompok,
+                kuota: cached[i].kuota,
+                terjual: newTerjual,
+                sisaKuota: newSisa,
+              );
+              changed = true;
+            }
+          }
         }
       }
 
@@ -478,6 +470,9 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
 
       widget.onSave(newTransaction);
       _showSuccessDialog(newTransaction, destination);
+    } on StockQuotaException catch (sqe) {
+      if (!mounted) return;
+      _showStockQuotaWarning(sqe.message);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -491,6 +486,79 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
         setState(() => _isSaving = false);
       }
     }
+  }
+
+  void _showStockQuotaWarning(String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.inventory_2_outlined, color: AppColors.error, size: 28),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Kuota Stok Tidak Cukup',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              message,
+              style: const TextStyle(fontSize: 13.5, height: 1.4, color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.amber.shade300),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18, color: Colors.amber),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Silakan sesuaikan jumlah barang nota atau input penambahan kuota stok awal.',
+                      style: TextStyle(fontSize: 11.5, color: Colors.brown),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Sesuaikan Jumlah'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.add_box_outlined, size: 16),
+            label: const Text('Input Stok Awal'),
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StockInputPage()),
+              ).then((_) => _fetchProducts());
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void _resetForm() {
@@ -1470,13 +1538,33 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
                               child: Row(
                                 children: [
                                   Text(
-                                    'Kode: ${product.tyunit.isEmpty ? '-' : product.tyunit}',
+                                    product.tyunit.isEmpty ? '-' : product.tyunit,
                                     style: const TextStyle(
                                       fontSize: 12,
+                                      fontWeight: FontWeight.w600,
                                       color: AppColors.textSecondary,
                                     ),
                                   ),
-                                  const SizedBox(width: 8),
+                                  if (product.kelompok.isNotEmpty) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.primary.withOpacity(0.08),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                                      ),
+                                      child: Text(
+                                        product.kelompok,
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  const SizedBox(width: 6),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 6,
@@ -1484,14 +1572,14 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
                                     ),
                                     decoration: BoxDecoration(
                                       color: product.stock > 0
-                                          ? AppColors.success
-                                              .withValues(alpha: 0.12)
-                                          : AppColors.error
-                                              .withValues(alpha: 0.12),
+                                          ? AppColors.success.withOpacity(0.12)
+                                          : AppColors.error.withOpacity(0.12),
                                       borderRadius: BorderRadius.circular(4),
                                     ),
                                     child: Text(
-                                      'Stok: ${product.stock}',
+                                      product.stock > 0
+                                          ? 'Sisa Kuota: ${product.stock}'
+                                          : 'Kuota Habis',
                                       style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w600,

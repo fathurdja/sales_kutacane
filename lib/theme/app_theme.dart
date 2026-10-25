@@ -13,6 +13,7 @@ class AppColors {
 
   // Latar & Permukaan
   static const Color background = Color(0xFFF6F7FB);
+  static const Color bgSecondary = Color(0xFFF1F3F5);
   static const Color surface = Color(0xFFFFFFFF);
   static const Color surfaceBorder = Color(0xFFE5E7EB);
 

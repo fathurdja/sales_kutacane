@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/printAll.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
@@ -40,9 +41,10 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   Future<void> _fetchTransactions() async {
     setState(() => _loading = true);
     try {
+      final headers = await AuthService.getAuthHeaders();
       final url = Uri.parse("https://laravel.fathurrzqn8n.web.id/api/transaksi");
       final response = await http
-          .get(url, headers: {'Accept': 'application/json'})
+          .get(url, headers: headers)
           .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {

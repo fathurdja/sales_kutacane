@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:path_provider/path_provider.dart';
 
 class SyncResult {
@@ -204,13 +205,11 @@ class OfflineSyncService {
           }).toList(),
         };
 
+        final headers = await AuthService.getAuthHeaders();
         final response = await http
             .post(
               Uri.parse(_apiUrl),
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-              },
+              headers: headers,
               body: jsonEncode(payload),
             )
             .timeout(const Duration(seconds: 10));

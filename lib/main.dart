@@ -5,6 +5,8 @@ import 'package:kasir_kutacane/pages/home_page.dart';
 import 'package:kasir_kutacane/pages/more_page.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
 import 'package:kasir_kutacane/pages/transactionlistBackup.dart';
+import 'package:kasir_kutacane/pages/login_page.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -16,6 +18,7 @@ Future<void> main() async {
     url: 'https://louzejtmywrwwdsxkuqb.supabase.co',
     anonKey: 'sb_publishable_UuumrgOaVGxuhGUcII3R3Q_SJzr7wY0',
   );
+  await AuthService.init();
   runApp(const MyApp());
 }
 
@@ -31,7 +34,9 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Sales Kencana v2',
       theme: AppTheme.lightTheme,
-      home: const MainNavigationScreen(),
+      home: AuthService.currentUser != null
+          ? const MainNavigationScreen()
+          : const LoginPage(),
     );
   }
 }

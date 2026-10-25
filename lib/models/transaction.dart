@@ -31,8 +31,12 @@ class Transaction {
         : (double.tryParse(rawTotal?.toString() ?? '0') ?? 0.0);
 
     return Transaction(
-      id: json['id']?.toString() ?? '',
-      id_transaksi: json['id_transaksi']?.toString() ?? '',
+      id: (json['id'] != null && json['id'].toString().isNotEmpty)
+          ? json['id'].toString()
+          : (json['id_transaksi']?.toString() ?? ''),
+      id_transaksi: json['id_transaksi']?.toString() ??
+          json['id']?.toString() ??
+          '',
       customerName: json['customer_name']?.toString() ??
           json['customerName']?.toString() ??
           '',
