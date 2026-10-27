@@ -71,22 +71,24 @@ class _MorePageState extends State<MorePage> {
             const SizedBox(height: AppSpacing.xxl),
           ],
 
-          // Section: Piutang & Pembayaran
-          _sectionHeader('Piutang & Pembayaran'),
-          const SizedBox(height: AppSpacing.sm),
-          _menuCard(
-            context,
-            icon: Icons.receipt_long_rounded,
-            title: 'Monitoring & Pelunasan Bon',
-            subtitle: 'Daftar transaksi bon & pelunasan dengan tanggal',
-            badgeText: 'Piutang',
-            badgeColor: AppColors.bon,
-            onTap: () => Navigator.push(
+          // Section: Piutang & Pembayaran (Khusus Admin)
+          if (AuthService.currentUser?.isAdmin == true) ...[
+            _sectionHeader('Piutang & Pembayaran'),
+            const SizedBox(height: AppSpacing.sm),
+            _menuCard(
               context,
-              MaterialPageRoute(builder: (_) => const PelunasanPage()),
+              icon: Icons.receipt_long_rounded,
+              title: 'Monitoring & Pelunasan Bon',
+              subtitle: 'Daftar transaksi bon & pelunasan dengan tanggal',
+              badgeText: 'Piutang',
+              badgeColor: AppColors.bon,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PelunasanPage()),
+              ),
             ),
-          ),
-          const SizedBox(height: AppSpacing.xxl),
+            const SizedBox(height: AppSpacing.xxl),
+          ],
 
           // Section: Inventori & Stok
           _sectionHeader('Inventori & Stok Produk'),

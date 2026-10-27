@@ -280,17 +280,18 @@ class HomePageState extends State<HomePage> {
               }
             },
             itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'pelunasan',
-                child: Row(
-                  children: [
-                    Icon(Icons.receipt_long_rounded,
-                        size: 20, color: AppColors.bon),
-                    SizedBox(width: 10),
-                    Text('Pelunasan Bon'),
-                  ],
+              if (AuthService.currentUser?.isAdmin == true)
+                const PopupMenuItem(
+                  value: 'pelunasan',
+                  child: Row(
+                    children: [
+                      Icon(Icons.receipt_long_rounded,
+                          size: 20, color: AppColors.bon),
+                      SizedBox(width: 10),
+                      Text('Pelunasan Bon'),
+                    ],
+                  ),
                 ),
-              ),
               PopupMenuItem(
                 value: 'stock',
                 child: Row(
@@ -474,8 +475,8 @@ class HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: AppSpacing.md),
 
-        // Banner Monitoring Bon jika ada transaksi BON belum lunas
-        if (_jumlahBon > 0 || _allActiveBonCount > 0) ...[
+        // Banner Monitoring Bon jika ada transaksi BON belum lunas (Khusus Admin)
+        if (AuthService.currentUser?.isAdmin == true && (_jumlahBon > 0 || _allActiveBonCount > 0)) ...[
           _buildBonAlertCard(),
           const SizedBox(height: AppSpacing.md),
         ],
@@ -645,28 +646,19 @@ class HomePageState extends State<HomePage> {
               flex: 2,
               child: OutlinedButton.icon(
                 onPressed: () {
-                  if (AuthService.currentUser?.isAdmin == true) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const StockInputPage()),
-                    ).then((_) => fetchTodayTransactions());
-                  } else {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const PelunasanPage()),
-                    ).then((_) => fetchTodayTransactions());
-                  }
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const StockInputPage()),
+                  ).then((_) => fetchTodayTransactions());
                 },
-                icon: Icon(
-                  AuthService.currentUser?.isAdmin == true
-                      ? Icons.inventory_2_outlined
-                      : Icons.receipt_long_rounded,
+                icon: const Icon(
+                  Icons.inventory_2_outlined,
                   size: 18,
                 ),
                 label: Text(
                   AuthService.currentUser?.isAdmin == true
                       ? 'Input Stok'
-                      : 'Pelunasan',
+                      : 'Katalog Stok',
                 ),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),

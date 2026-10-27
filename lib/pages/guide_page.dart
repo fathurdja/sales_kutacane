@@ -841,11 +841,15 @@ class _GuidePageState extends State<GuidePage>
               '3. Tekan tombol "Pelunasan" berwarna hijau pada kartu transaksi.\n'
               '4. Pilih Tanggal Pelunasan sesuai saat uang kas diterima.\n'
               '5. Tekan "Simpan Pelunasan" -> Aplikasi langsung otomatis mencetak struk bukti pelunasan dengan keterangan Tanggal Pelunasan!',
-          actionLabel: 'Buka Monitoring Pelunasan',
-          onAction: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const PelunasanPage()),
-          ),
+          actionLabel: AuthService.currentUser?.isAdmin == true
+              ? 'Buka Monitoring Pelunasan'
+              : null,
+          onAction: AuthService.currentUser?.isAdmin == true
+              ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                  )
+              : null,
           tips:
               'Riwayat pelunasan tersinkronisasi ganda ke database server dan memori lokal HP sehingga aman dari kehilangan data.',
         ),

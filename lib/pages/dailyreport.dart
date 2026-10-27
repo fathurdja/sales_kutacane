@@ -881,10 +881,16 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.account_balance_wallet_outlined, color: Colors.white70, size: 18),
+                      Icon(
+                        _isAdmin
+                            ? Icons.account_balance_wallet_outlined
+                            : Icons.receipt_long_rounded,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
                       const SizedBox(width: 6),
                       Text(
-                        'Total Keseluruhan Omzet',
+                        _isAdmin ? 'Total Keseluruhan Omzet' : 'Rekap Transaksi Hari Ini',
                         style: TextStyle(
                           color: Colors.white.withOpacity(0.9),
                           fontSize: 13,
@@ -900,7 +906,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      _isAllDates
+                      _isAdmin && _isAllDates
                           ? 'Semua Tanggal • ${_filteredTransactions.length} Nota'
                           : '${DateFormat('dd MMM').format(_currentDate)} • ${_filteredTransactions.length} Nota',
                       style: const TextStyle(
@@ -917,7 +923,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                 alignment: Alignment.centerLeft,
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  currencyFormat.format(_totalKeseluruhan),
+                  _isAdmin
+                      ? currencyFormat.format(_totalKeseluruhan)
+                      : '${_filteredTransactions.length} Nota',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 28,
@@ -928,7 +936,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • QRIS: ${_qrisTransactions.length} Nota (${currencyFormat.format(_omzetQris)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})',
+                _isAdmin
+                    ? 'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • QRIS: ${_qrisTransactions.length} Nota (${currencyFormat.format(_omzetQris)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})'
+                    : 'Lunas: ${_lunasTransactions.length} Nota • QRIS: ${_qrisTransactions.length} Nota • Bon: ${_bonTransactions.length} Nota',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.85),
                   fontSize: 11.5,
@@ -948,7 +958,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               child: _buildBreakdownItemCard(
                 title: 'Lunas',
                 countText: '${_lunasTransactions.length} Nota',
-                amountText: currencyFormat.format(_omzetLunas),
+                amountText: _isAdmin ? currencyFormat.format(_omzetLunas) : null,
                 icon: Icons.check_circle_outline,
                 color: AppColors.lunas,
                 bgColor: AppColors.lunasBg,
@@ -962,7 +972,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               child: _buildBreakdownItemCard(
                 title: 'QRIS',
                 countText: '${_qrisTransactions.length} Nota',
-                amountText: currencyFormat.format(_omzetQris),
+                amountText: _isAdmin ? currencyFormat.format(_omzetQris) : null,
                 icon: Icons.qr_code_2_rounded,
                 color: AppColors.qris,
                 bgColor: AppColors.qrisBg,
@@ -976,7 +986,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               child: _buildBreakdownItemCard(
                 title: 'Bon',
                 countText: '${_bonTransactions.length} Nota',
-                amountText: currencyFormat.format(_omzetBon),
+                amountText: _isAdmin ? currencyFormat.format(_omzetBon) : null,
                 icon: Icons.pending_actions_rounded,
                 color: AppColors.bon,
                 bgColor: AppColors.bonBg,
@@ -987,8 +997,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
           ],
         ),
 
-        // 3. KARTU MONITORING BON / TOTAL PIUTANG BON BERJALAN (AKUMULASI SEMUA TANGGAL)
-        if (_allActiveBonTransactions.isNotEmpty) ...[
+        // 3. KARTU MONITORING BON / TOTAL PIUTANG BON BERJALAN (KHUSUS ADMIN)
+        if (_isAdmin && _allActiveBonTransactions.isNotEmpty) ...[
           const SizedBox(height: 10),
           InkWell(
             onTap: () {
@@ -1101,7 +1111,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   Widget _buildBreakdownItemCard({
     required String title,
     required String countText,
-    required String amountText,
+    String? amountText,
     required IconData icon,
     required Color color,
     required Color bgColor,
@@ -1139,27 +1149,51 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               ],
             ),
             const SizedBox(height: 6),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                amountText,
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w900,
-                  color: color,
+            if (amountText != null && amountText.isNotEmpty) ...[
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  amountText,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    color: color,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              countText,
-              style: const TextStyle(
-                fontSize: 10.5,
-                color: AppColors.textSecondary,
-                fontWeight: FontWeight.w500,
+              const SizedBox(height: 2),
+              Text(
+                countText,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-            ),
+            ] else ...[
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  countText,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    color: color,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 2),
+              const Text(
+                'Nota Terbuat',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
           ],
         ),
       ),

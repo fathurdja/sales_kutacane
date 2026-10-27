@@ -223,7 +223,26 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
     final now = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
 
-    // Hitung awal minggu ini (Senin)
+    final isSales = _currentUser != null && !_currentUser!.isUserAdmin;
+    if (isSales) {
+      // Sales HANYA bisa melihat transaksi hari ini
+      setState(() {
+        _filteredTransactions = _transactions.where((trx) {
+          final isToday = DateFormat('yyyy-MM-dd').format(trx.date) == todayStr;
+          if (!isToday) return false;
+
+          if (query.isNotEmpty) {
+            final matchName = trx.customerName.toLowerCase().contains(query);
+            final matchId = trx.id_transaksi.toLowerCase().contains(query);
+            if (!matchName && !matchId) return false;
+          }
+          return true;
+        }).toList();
+      });
+      return;
+    }
+
+    // Hitung awal minggu ini (Senin) untuk Admin
     final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
     final startOfWeekDate = DateTime(
       startOfWeek.year,
@@ -955,131 +974,174 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
                           const SizedBox(height: 10),
                         ],
 
-                        // Quick Filter Chips Row
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              _buildFilterChip(
-                                label: 'Semua',
-                                selected: _quickFilter == TransactionQuickFilter.all &&
-                                    _filterDate == null,
-                                onSelected: () {
-                                  setState(() {
-                                    _quickFilter = TransactionQuickFilter.all;
-                                    _filterDate = null;
-                                  });
-                                  _applyFilter();
-                                },
-                              ),
-                              const SizedBox(width: 8),
-                              _buildFilterChip(
-                                label: 'Hari Ini',
-                                selected: _quickFilter == TransactionQuickFilter.today &&
-                                    _filterDate == null,
-                                onSelected: () {
-                                  setState(() {
-                                    _quickFilter = TransactionQuickFilter.today;
-                                    _filterDate = null;
-                                  });
-                                  _applyFilter();
-                                },
-                              ),
-                              const SizedBox(width: 8),
-                              _buildFilterChip(
-                                label: 'Minggu Ini',
-                                selected: _quickFilter ==
-                                        TransactionQuickFilter.thisWeek &&
-                                    _filterDate == null,
-                                onSelected: () {
-                                  setState(() {
-                                    _quickFilter = TransactionQuickFilter.thisWeek;
-                                    _filterDate = null;
-                                  });
-                                  _applyFilter();
-                                },
-                              ),
-                              const SizedBox(width: 8),
-                              _buildFilterChip(
-                                label: 'BON Saja',
-                                selected: _quickFilter == TransactionQuickFilter.bonOnly &&
-                                    _filterDate == null,
-                                onSelected: () {
-                                  setState(() {
-                                    _quickFilter = TransactionQuickFilter.bonOnly;
-                                    _filterDate = null;
-                                  });
-                                  _applyFilter();
-                                },
-                              ),
-                              const SizedBox(width: 8),
-                              _buildFilterChip(
-                                label: 'QRIS Saja',
-                                selected: _quickFilter == TransactionQuickFilter.qrisOnly &&
-                                    _filterDate == null,
-                                onSelected: () {
-                                  setState(() {
-                                    _quickFilter = TransactionQuickFilter.qrisOnly;
-                                    _filterDate = null;
-                                  });
-                                  _applyFilter();
-                                },
-                              ),
-                              const SizedBox(width: 8),
-                              // Date Picker Chip
-                              ActionChip(
-                                avatar: Icon(
-                                  _filterDate == null
-                                      ? Icons.calendar_today_outlined
-                                      : Icons.check,
-                                  size: 16,
-                                  color: _filterDate != null
-                                      ? AppColors.primary
-                                      : AppColors.textSecondary,
+                        // Quick Filter Chips Row (Khusus Admin)
+                        if (_currentUser?.isUserAdmin == true) ...[
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                _buildFilterChip(
+                                  label: 'Semua',
+                                  selected: _quickFilter == TransactionQuickFilter.all &&
+                                      _filterDate == null,
+                                  onSelected: () {
+                                    setState(() {
+                                      _quickFilter = TransactionQuickFilter.all;
+                                      _filterDate = null;
+                                    });
+                                    _applyFilter();
+                                  },
                                 ),
-                                label: Text(
-                                  _filterDate == null
-                                      ? 'Pilih Tanggal'
-                                      : DateFormat('dd MMM yyyy').format(_filterDate!),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: _filterDate != null
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
+                                const SizedBox(width: 8),
+                                _buildFilterChip(
+                                  label: 'Hari Ini',
+                                  selected: _quickFilter == TransactionQuickFilter.today &&
+                                      _filterDate == null,
+                                  onSelected: () {
+                                    setState(() {
+                                      _quickFilter = TransactionQuickFilter.today;
+                                      _filterDate = null;
+                                    });
+                                    _applyFilter();
+                                  },
+                                ),
+                                const SizedBox(width: 8),
+                                _buildFilterChip(
+                                  label: 'Minggu Ini',
+                                  selected: _quickFilter ==
+                                          TransactionQuickFilter.thisWeek &&
+                                      _filterDate == null,
+                                  onSelected: () {
+                                    setState(() {
+                                      _quickFilter = TransactionQuickFilter.thisWeek;
+                                      _filterDate = null;
+                                    });
+                                    _applyFilter();
+                                  },
+                                ),
+                                const SizedBox(width: 8),
+                                _buildFilterChip(
+                                  label: 'BON Saja',
+                                  selected: _quickFilter == TransactionQuickFilter.bonOnly &&
+                                      _filterDate == null,
+                                  onSelected: () {
+                                    setState(() {
+                                      _quickFilter = TransactionQuickFilter.bonOnly;
+                                      _filterDate = null;
+                                    });
+                                    _applyFilter();
+                                  },
+                                ),
+                                const SizedBox(width: 8),
+                                _buildFilterChip(
+                                  label: 'QRIS Saja',
+                                  selected: _quickFilter == TransactionQuickFilter.qrisOnly &&
+                                      _filterDate == null,
+                                  onSelected: () {
+                                    setState(() {
+                                      _quickFilter = TransactionQuickFilter.qrisOnly;
+                                      _filterDate = null;
+                                    });
+                                    _applyFilter();
+                                  },
+                                ),
+                                const SizedBox(width: 8),
+                                // Date Picker Chip
+                                ActionChip(
+                                  avatar: Icon(
+                                    _filterDate == null
+                                        ? Icons.calendar_today_outlined
+                                        : Icons.check,
+                                    size: 16,
                                     color: _filterDate != null
                                         ? AppColors.primary
-                                        : AppColors.textPrimary,
+                                        : AppColors.textSecondary,
+                                  ),
+                                  label: Text(
+                                    _filterDate == null
+                                        ? 'Pilih Tanggal'
+                                        : DateFormat('dd MMM yyyy').format(_filterDate!),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: _filterDate != null
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      color: _filterDate != null
+                                          ? AppColors.primary
+                                          : AppColors.textPrimary,
+                                    ),
+                                  ),
+                                  backgroundColor: _filterDate != null
+                                      ? AppColors.primaryLight
+                                      : AppColors.background,
+                                  side: BorderSide(
+                                    color: _filterDate != null
+                                        ? AppColors.primary
+                                        : AppColors.surfaceBorder,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius:
+                                        BorderRadius.circular(AppRadius.chipFull),
+                                  ),
+                                  onPressed: () => _selectFilterDate(context),
+                                ),
+                                if (_filterDate != null) ...[
+                                  const SizedBox(width: 4),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.cancel,
+                                      size: 18,
+                                      color: AppColors.textSecondary,
+                                    ),
+                                    tooltip: 'Hapus filter tanggal',
+                                    onPressed: _clearDateFilter,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ] else ...[
+                          // Banner Info Khusus Sales: Hanya Transaksi Hari Ini
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(AppRadius.card),
+                              border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.today_rounded, size: 16, color: AppColors.primary),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Transaksi Hari Ini (${DateFormat('dd MMMM yyyy', 'id_ID').format(DateTime.now())})',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.primary,
+                                    ),
                                   ),
                                 ),
-                                backgroundColor: _filterDate != null
-                                    ? AppColors.primaryLight
-                                    : AppColors.background,
-                                side: BorderSide(
-                                  color: _filterDate != null
-                                      ? AppColors.primary
-                                      : AppColors.surfaceBorder,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius:
-                                      BorderRadius.circular(AppRadius.chipFull),
-                                ),
-                                onPressed: () => _selectFilterDate(context),
-                              ),
-                              if (_filterDate != null) ...[
-                                const SizedBox(width: 4),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.cancel,
-                                    size: 18,
-                                    color: AppColors.textSecondary,
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary,
+                                    borderRadius: BorderRadius.circular(6),
                                   ),
-                                  tooltip: 'Hapus filter tanggal',
-                                  onPressed: _clearDateFilter,
+                                  child: Text(
+                                    '${_filteredTransactions.length} Nota',
+                                    style: const TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                    ),
+                                  ),
                                 ),
                               ],
-                            ],
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),

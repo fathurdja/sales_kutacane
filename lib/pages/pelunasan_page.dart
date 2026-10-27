@@ -53,6 +53,15 @@ class _PelunasanPageState extends State<PelunasanPage>
     final user = await AuthService.getCurrentUser();
     if (mounted) {
       setState(() => _currentUser = user);
+      if (user != null && !user.isUserAdmin) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Menu Monitoring Pelunasan Bon hanya dapat diakses oleh Admin.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
     }
   }
 
