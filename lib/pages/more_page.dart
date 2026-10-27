@@ -105,14 +105,16 @@ class _MorePageState extends State<MorePage> {
               MaterialPageRoute(builder: (_) => const StockInputPage()),
             ),
           ),
-          const SizedBox(height: AppSpacing.cardGap),
-          _menuCard(
-            context,
-            icon: Icons.event_repeat_rounded,
-            title: 'Tutup Buku & Rollover Stok',
-            subtitle: 'Arsip transaksi hari ini & set sisa stok jadi stok awal besok',
-            onTap: () => _performDailyClosing(context),
-          ),
+          if (AuthService.currentUser?.isAdmin == true) ...[
+            const SizedBox(height: AppSpacing.cardGap),
+            _menuCard(
+              context,
+              icon: Icons.event_repeat_rounded,
+              title: 'Tutup Buku & Rollover Stok',
+              subtitle: 'Arsip transaksi hari ini & set sisa stok jadi stok awal besok',
+              onTap: () => _performDailyClosing(context),
+            ),
+          ],
 
           const SizedBox(height: AppSpacing.xxl),
 
@@ -1154,6 +1156,16 @@ class _MorePageState extends State<MorePage> {
   }
 
   Future<void> _performDailyClosing(BuildContext context) async {
+    if (AuthService.currentUser?.isAdmin != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Menu Tutup Buku & Rollover Stok hanya untuk Admin'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
     showDialog(
       context: context,
       barrierDismissible: false,

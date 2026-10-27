@@ -40,8 +40,17 @@ class TestPrint {
       );
 
       // ====== JUDUL STRUK ======
-      final isLunas = transaction.status.toUpperCase() == 'LUNAS';
-      final judulStruk = isLunas ? "*** NOTA LUNAS ***" : "*** NOTA BON (BELUM LUNAS) ***";
+      final statusUpper = transaction.status.toUpperCase();
+      final isLunas = statusUpper == 'LUNAS';
+      final isQris = statusUpper == 'QRIS';
+      final String judulStruk;
+      if (isLunas) {
+        judulStruk = "*** NOTA LUNAS ***";
+      } else if (isQris) {
+        judulStruk = "*** NOTA QRIS (MENUNGGU VERIFIKASI) ***";
+      } else {
+        judulStruk = "*** NOTA BON (BELUM LUNAS) ***";
+      }
       await bluetooth.printCustom(
         judulStruk,
         Size.boldMedium.val,
@@ -111,9 +120,17 @@ class TestPrint {
       );
 
       // ====== PEMBAYARAN & TOTAL ======
+      final String statusBayarText;
+      if (isLunas) {
+        statusBayarText = "LUNAS";
+      } else if (isQris) {
+        statusBayarText = "QRIS (CEK ADMIN)";
+      } else {
+        statusBayarText = "BON (BELUM LUNAS)";
+      }
       await bluetooth.printLeftRight(
         "STATUS BAYAR",
-        isLunas ? "LUNAS" : "BON (BELUM LUNAS)",
+        statusBayarText,
         Size.boldMedium.val,
       );
       if (isLunas && transaction.tanggalPelunasan != null) {

@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
@@ -28,13 +29,31 @@ class _PelunasanPageState extends State<PelunasanPage>
   List<Transaction> _allTransactions = [];
   bool _isLoading = true;
   String? _errorMessage;
+  UserModel? _currentUser;
+
+  bool get _isAdmin => _currentUser?.isUserAdmin ?? false;
+
+  // Filter tipe pembayaran: 'ALL', 'BON', 'QRIS' (Item 3)
+  String _paymentFilter = 'ALL';
+
+  // Filter tanggal: 'SEMUA', 'HARI_INI', 'MINGGU_INI', 'CUSTOM' (Item 5)
+  String _dateFilterPreset = 'SEMUA';
+  DateTime? _filterDate;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _searchCtrl.addListener(() => setState(() {}));
+    _loadCurrentUser();
     fetchTransactions();
+  }
+
+  Future<void> _loadCurrentUser() async {
+    final user = await AuthService.getCurrentUser();
+    if (mounted) {
+      setState(() => _currentUser = user);
+    }
   }
 
   @override
@@ -138,11 +157,55 @@ class _PelunasanPageState extends State<PelunasanPage>
     }
   }
 
-  List<Transaction> get _bonTransactions {
+  bool _matchesDateFilter(DateTime targetDate) {
+    if (_dateFilterPreset == 'SEMUA') return true;
+
+    final now = DateTime.now();
+    if (_dateFilterPreset == 'HARI_INI') {
+      return targetDate.year == now.year &&
+          targetDate.month == now.month &&
+          targetDate.day == now.day;
+    } else if (_dateFilterPreset == 'MINGGU_INI') {
+      final startOfWeek = now.subtract(Duration(days: now.weekday - 1));
+      final startOfWeekDate = DateTime(startOfWeek.year, startOfWeek.month, startOfWeek.day);
+      return targetDate.isAfter(startOfWeekDate.subtract(const Duration(seconds: 1)));
+    } else if (_dateFilterPreset == 'CUSTOM' && _filterDate != null) {
+      return targetDate.year == _filterDate!.year &&
+          targetDate.month == _filterDate!.month &&
+          targetDate.day == _filterDate!.day;
+    }
+    return true;
+  }
+
+  Future<void> _selectCustomDateFilter() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _filterDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+      helpText: 'Pilih Tanggal Transaksi / Pelunasan',
+    );
+    if (picked != null) {
+      setState(() {
+        _filterDate = picked;
+        _dateFilterPreset = 'CUSTOM';
+      });
+    }
+  }
+
+  List<Transaction> get _pendingTransactions {
     final q = _searchCtrl.text.trim().toLowerCase();
     return _allTransactions.where((t) {
-      final isBon = t.status.toUpperCase() == 'BON';
-      if (!isBon) return false;
+      final isPending = t.isBon || t.isQris;
+      if (!isPending) return false;
+
+      // Filter jenis pembayaran (Item 3)
+      if (_paymentFilter == 'BON' && !t.isBon) return false;
+      if (_paymentFilter == 'QRIS' && !t.isQris) return false;
+
+      // Filter tanggal nota dibuat (Item 5)
+      if (!_matchesDateFilter(t.date)) return false;
+
       if (q.isEmpty) return true;
       return t.customerName.toLowerCase().contains(q) ||
           t.id_transaksi.toLowerCase().contains(q) ||
@@ -150,11 +213,17 @@ class _PelunasanPageState extends State<PelunasanPage>
     }).toList();
   }
 
+
   List<Transaction> get _lunasTransactions {
     final q = _searchCtrl.text.trim().toLowerCase();
     return _allTransactions.where((t) {
-      final isLunas = t.status.toUpperCase() == 'LUNAS';
+      final isLunas = t.isLunas;
       if (!isLunas) return false;
+
+      // Filter tanggal pelunasan / pembayaran (Item 5)
+      final effectiveDate = t.tanggalPelunasan ?? t.date;
+      if (!_matchesDateFilter(effectiveDate)) return false;
+
       if (q.isEmpty) return true;
       return t.customerName.toLowerCase().contains(q) ||
           t.id_transaksi.toLowerCase().contains(q) ||
@@ -164,13 +233,32 @@ class _PelunasanPageState extends State<PelunasanPage>
 
   double get _totalPiutangBon {
     return _allTransactions
-        .where((t) => t.status.toUpperCase() == 'BON')
+        .where((t) => t.isBon)
         .fold(0.0, (sum, t) => sum + t.total);
   }
 
+  double get _totalPendingQris {
+    return _allTransactions
+        .where((t) => t.isQris)
+        .fold(0.0, (sum, t) => sum + t.total);
+  }
+
+  double get _totalPendingAll => _totalPiutangBon + _totalPendingQris;
+
   void _showPelunasanDialog(Transaction trx) {
+    if (!_isAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hanya Admin yang dapat memproses pelunasan / verifikasi pembayaran.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
     DateTime selectedDate = DateTime.now();
     bool isSubmitting = false;
+    final isQris = trx.isQris;
 
     showModalBottomSheet(
       context: context,
@@ -214,12 +302,12 @@ class _PelunasanPageState extends State<PelunasanPage>
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: AppColors.lunas.withOpacity(0.12),
+                          color: (isQris ? AppColors.qris : AppColors.lunas).withOpacity(0.12),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(
-                          Icons.task_alt_rounded,
-                          color: AppColors.lunas,
+                        child: Icon(
+                          isQris ? Icons.qr_code_2_rounded : Icons.task_alt_rounded,
+                          color: isQris ? AppColors.qris : AppColors.lunas,
                           size: 26,
                         ),
                       ),
@@ -228,9 +316,9 @@ class _PelunasanPageState extends State<PelunasanPage>
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'Pelunasan Transaksi Bon',
-                              style: TextStyle(
+                            Text(
+                              isQris ? 'Verifikasi Pembayaran QRIS' : 'Pelunasan Transaksi Bon',
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
                                 color: AppColors.textPrimary,
@@ -272,7 +360,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Tanggal Bon:', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            Text(isQris ? 'Tanggal Transaksi:' : 'Tanggal Bon:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                             Text(dateFormat.format(trx.date), style: const TextStyle(fontSize: 12)),
                           ],
                         ),
@@ -280,13 +368,13 @@ class _PelunasanPageState extends State<PelunasanPage>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Total Tagihan:', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            Text(isQris ? 'Nominal QRIS:' : 'Total Tagihan:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                             Text(
                               currencyFormat.format(trx.total),
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 15,
                                 fontWeight: FontWeight.w800,
-                                color: AppColors.bon,
+                                color: isQris ? AppColors.qris : AppColors.bon,
                               ),
                             ),
                           ],
@@ -296,9 +384,9 @@ class _PelunasanPageState extends State<PelunasanPage>
                   ),
 
                   const SizedBox(height: 16),
-                  const Text(
-                    'Pilih Tanggal Pelunasan:',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  Text(
+                    isQris ? 'Pilih Tanggal Verifikasi Masuk:' : 'Pilih Tanggal Pelunasan:',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 8),
 
@@ -310,7 +398,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         initialDate: selectedDate,
                         firstDate: DateTime(2020),
                         lastDate: DateTime.now().add(const Duration(days: 30)),
-                        helpText: 'Pilih Tanggal Pembayaran/Pelunasan',
+                        helpText: isQris ? 'Pilih Tanggal Verifikasi Dana' : 'Pilih Tanggal Pembayaran/Pelunasan',
                       );
                       if (picked != null) {
                         setModalState(() {
@@ -324,11 +412,11 @@ class _PelunasanPageState extends State<PelunasanPage>
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+                        border: Border.all(color: (isQris ? AppColors.qris : AppColors.primary).withOpacity(0.4)),
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.calendar_month_outlined, color: AppColors.primary, size: 20),
+                          Icon(Icons.calendar_month_outlined, color: isQris ? AppColors.qris : AppColors.primary, size: 20),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
@@ -370,10 +458,12 @@ class _PelunasanPageState extends State<PelunasanPage>
                                   height: 18,
                                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                                 )
-                              : const Icon(Icons.check_circle_outline, size: 18),
-                          label: Text(isSubmitting ? 'Memproses...' : 'Lunasi Sekarang'),
+                              : Icon(isQris ? Icons.verified_outlined : Icons.check_circle_outline, size: 18),
+                          label: Text(isSubmitting
+                              ? 'Memproses...'
+                              : (isQris ? 'Verifikasi Lunas' : 'Lunasi Sekarang')),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.lunas,
+                            backgroundColor: isQris ? AppColors.qris : AppColors.lunas,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 14),
                           ),
@@ -398,7 +488,9 @@ class _PelunasanPageState extends State<PelunasanPage>
   }
 
   Future<void> _executePelunasan(Transaction trx, DateTime tanggalPelunasan) async {
+    if (!_isAdmin) return;
     final formattedDate = DateFormat('yyyy-MM-dd').format(tanggalPelunasan);
+    final wasQris = trx.isQris;
 
     try {
       // 1. Simpan ke PelunasanHistoryService lokal HP
@@ -458,9 +550,11 @@ class _PelunasanPageState extends State<PelunasanPage>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DILUNASI!',
+            wasQris
+                ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DIVERIFIKASI LUNAS!'
+                : 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DILUNASI!',
           ),
-          backgroundColor: AppColors.lunas,
+          backgroundColor: wasQris ? AppColors.qris : AppColors.lunas,
         ),
       );
 
@@ -575,7 +669,7 @@ class _PelunasanPageState extends State<PelunasanPage>
           tabs: [
             Tab(
               icon: const Icon(Icons.pending_actions_outlined, size: 20),
-              text: 'Belum Lunas (${_bonTransactions.length})',
+              text: 'Menunggu (${_pendingTransactions.length})',
             ),
             Tab(
               icon: const Icon(Icons.history_outlined, size: 20),
@@ -608,9 +702,9 @@ class _PelunasanPageState extends State<PelunasanPage>
                     ),
                   ),
 
-                // Search & Filter Box
+                // Search Box
                 Padding(
-                  padding: const EdgeInsets.all(AppSpacing.screenMargin),
+                  padding: const EdgeInsets.fromLTRB(AppSpacing.screenMargin, AppSpacing.screenMargin, AppSpacing.screenMargin, 8),
                   child: TextField(
                     controller: _searchCtrl,
                     decoration: InputDecoration(
@@ -627,7 +721,89 @@ class _PelunasanPageState extends State<PelunasanPage>
                   ),
                 ),
 
-                // Banner Total Piutang Bon
+                // Filter Tipe & Tanggal (Item 3 & Item 5)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.screenMargin),
+                    child: Row(
+                      children: [
+                        // Filter Jenis Pembayaran
+                        ChoiceChip(
+                          label: const Text('Semua'),
+                          selected: _paymentFilter == 'ALL',
+                          onSelected: (_) => setState(() => _paymentFilter = 'ALL'),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: Text('BON (${_allTransactions.where((t) => t.isBon).length})'),
+                          selected: _paymentFilter == 'BON',
+                          selectedColor: AppColors.bon.withOpacity(0.22),
+                          onSelected: (_) => setState(() => _paymentFilter = 'BON'),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: Text('QRIS (${_allTransactions.where((t) => t.isQris).length})'),
+                          selected: _paymentFilter == 'QRIS',
+                          selectedColor: AppColors.qris.withOpacity(0.22),
+                          onSelected: (_) => setState(() => _paymentFilter = 'QRIS'),
+                        ),
+                        const SizedBox(width: 10),
+                        Container(width: 1, height: 24, color: Colors.grey.shade300),
+                        const SizedBox(width: 10),
+                        // Filter Tanggal
+                        ChoiceChip(
+                          label: const Text('Semua Tanggal'),
+                          selected: _dateFilterPreset == 'SEMUA',
+                          onSelected: (_) => setState(() {
+                            _dateFilterPreset = 'SEMUA';
+                            _filterDate = null;
+                          }),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: const Text('Hari Ini'),
+                          selected: _dateFilterPreset == 'HARI_INI',
+                          onSelected: (_) => setState(() {
+                            _dateFilterPreset = 'HARI_INI';
+                            _filterDate = null;
+                          }),
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: const Text('Minggu Ini'),
+                          selected: _dateFilterPreset == 'MINGGU_INI',
+                          onSelected: (_) => setState(() {
+                            _dateFilterPreset = 'MINGGU_INI';
+                            _filterDate = null;
+                          }),
+                        ),
+                        const SizedBox(width: 6),
+                        ActionChip(
+                          avatar: Icon(
+                            _dateFilterPreset == 'CUSTOM' ? Icons.check : Icons.calendar_month_outlined,
+                            size: 15,
+                            color: _dateFilterPreset == 'CUSTOM' ? AppColors.primary : AppColors.textSecondary,
+                          ),
+                          label: Text(
+                            _dateFilterPreset == 'CUSTOM' && _filterDate != null
+                                ? DateFormat('dd MMM').format(_filterDate!)
+                                : 'Pilih Tanggal',
+                            style: TextStyle(
+                              color: _dateFilterPreset == 'CUSTOM' ? AppColors.primary : AppColors.textPrimary,
+                              fontWeight: _dateFilterPreset == 'CUSTOM' ? FontWeight.w700 : FontWeight.normal,
+                              fontSize: 12,
+                            ),
+                          ),
+                          onPressed: _selectCustomDateFilter,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Banner Total Piutang Bon & QRIS
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: AppSpacing.screenMargin),
                   padding: const EdgeInsets.all(16),
@@ -643,24 +819,36 @@ class _PelunasanPageState extends State<PelunasanPage>
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Total Piutang Bon Berjalan',
-                            style: TextStyle(color: Colors.white70, fontSize: 12),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            currencyFormat.format(_totalPiutangBon),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 22,
-                              fontWeight: FontWeight.w800,
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Total Tertunda & Piutang Berjalan',
+                              style: TextStyle(color: Colors.white70, fontSize: 12),
                             ),
-                          ),
-                        ],
+                            const SizedBox(height: 4),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                currencyFormat.format(_totalPendingAll),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Bon: ${currencyFormat.format(_totalPiutangBon)} • QRIS: ${currencyFormat.format(_totalPendingQris)}',
+                              style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 11),
+                            ),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
@@ -670,7 +858,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         child: Column(
                           children: [
                             Text(
-                              '${_bonTransactions.length}',
+                              '${_pendingTransactions.length}',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 18,
@@ -678,7 +866,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                               ),
                             ),
                             const Text(
-                              'Nota Bon',
+                              'Tertunda',
                               style: TextStyle(color: Colors.white70, fontSize: 11),
                             ),
                           ],
@@ -706,7 +894,7 @@ class _PelunasanPageState extends State<PelunasanPage>
   }
 
   Widget _buildBonList(NumberFormat currencyFormat) {
-    final list = _bonTransactions;
+    final list = _pendingTransactions;
     final dateFormat = DateFormat('dd MMM yyyy, HH:mm');
 
     if (list.isEmpty) {
@@ -717,12 +905,12 @@ class _PelunasanPageState extends State<PelunasanPage>
             Icon(Icons.check_circle_outline, size: 54, color: Colors.green.shade400),
             const SizedBox(height: 12),
             const Text(
-              'Tidak ada transaksi bon yang tertunda!',
+              'Tidak ada transaksi yang tertunda!',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
             const Text(
-              'Semua piutang telah lunas atau belum ada nota bon.',
+              'Semua piutang & QRIS telah terverifikasi lunas atau belum ada nota.',
               style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
             ),
           ],
@@ -752,16 +940,18 @@ class _PelunasanPageState extends State<PelunasanPage>
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: AppColors.bonBg,
+                          color: trx.isQris ? AppColors.qrisBg : AppColors.bonBg,
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: AppColors.bon.withOpacity(0.3)),
+                          border: Border.all(
+                            color: (trx.isQris ? AppColors.qris : AppColors.bon).withOpacity(0.3),
+                          ),
                         ),
-                        child: const Text(
-                          'BELUM LUNAS (BON)',
+                        child: Text(
+                          trx.isQris ? 'MENUNGGU VERIFIKASI (QRIS)' : 'BELUM LUNAS (BON)',
                           style: TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w800,
-                            color: AppColors.bon,
+                            color: trx.isQris ? AppColors.qris : AppColors.bon,
                           ),
                         ),
                       ),
@@ -799,13 +989,16 @@ class _PelunasanPageState extends State<PelunasanPage>
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Total Piutang', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                          Text(
+                            trx.isQris ? 'Nominal QRIS' : 'Total Piutang',
+                            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                          ),
                           Text(
                             currencyFormat.format(trx.total),
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w900,
-                              color: AppColors.bon,
+                              color: trx.isQris ? AppColors.qris : AppColors.bon,
                             ),
                           ),
                         ],
@@ -828,17 +1021,48 @@ class _PelunasanPageState extends State<PelunasanPage>
                             child: const Text('Detail', style: TextStyle(fontSize: 12)),
                           ),
                           const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.lunas,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              visualDensity: VisualDensity.compact,
+                          if (_isAdmin)
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: trx.isQris ? AppColors.qris : AppColors.lunas,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              icon: Icon(
+                                trx.isQris ? Icons.verified_outlined : Icons.check_circle_outline,
+                                size: 16,
+                              ),
+                              label: Text(
+                                trx.isQris ? 'Verifikasi' : 'Lunasi',
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                              ),
+                              onPressed: () => _showPelunasanDialog(trx),
+                            )
+                          else
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.grey.shade300),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.lock_outline, size: 13, color: AppColors.textSecondary),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Khusus Admin',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            icon: const Icon(Icons.check_circle_outline, size: 16),
-                            label: const Text('Lunasi', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-                            onPressed: () => _showPelunasanDialog(trx),
-                          ),
                         ],
                       ),
                     ],
@@ -868,9 +1092,11 @@ class _PelunasanPageState extends State<PelunasanPage>
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
-            const Text(
-              'Transaksi yang telah dilunasi akan muncul di sini.',
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            Text(
+              _dateFilterPreset != 'SEMUA' || _searchCtrl.text.isNotEmpty
+                  ? 'Tidak ada transaksi lunas yang cocok dengan filter tanggal/pencarian.'
+                  : 'Transaksi yang telah dilunasi akan muncul di sini.',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
             ),
           ],
         ),

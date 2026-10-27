@@ -132,6 +132,15 @@ class PelunasanHistoryService {
     await _saveMap(map);
   }
 
+  /// Menghapus riwayat pelunasan jika nota diubah kembali ke BON/QRIS atau transaksi dihapus
+  static Future<void> removeSettlement(String idTransaksi) async {
+    final map = await loadHistory();
+    if (map.containsKey(idTransaksi)) {
+      map.remove(idTransaksi);
+      await _saveMap(map);
+    }
+  }
+
   static Future<void> _saveMap(Map<String, PelunasanRecord> map) async {
     try {
       final file = await _getFile();

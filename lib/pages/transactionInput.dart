@@ -11,6 +11,7 @@ import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
+import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
@@ -225,16 +226,89 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   Future<SaveDestination> _saveTransactionToApi(Transaction transaction) async {
+    final isEditing = widget.transaction != null;
+    if (isEditing) {
+      // MODE EDIT TRANSAKSI:
+      // Update data transaksi yang ada via PUT tanpa mengurangi kuota stok lagi
+      final updateUrl = '${ApiConfig.baseUrl}/transaksi/${transaction.id_transaksi}';
+      final formattedPelunasan = _paymentStatus == 'LUNAS'
+          ? DateFormat('yyyy-MM-dd').format(DateTime.now())
+          : null;
+
+      final editPayload = {
+        'status': _paymentStatus,
+        'customer_name': transaction.customerName,
+        'customerName': transaction.customerName,
+        'alamat': transaction.alamat,
+        'total': transaction.total.truncateToDouble() == transaction.total
+            ? transaction.total.toInt()
+            : transaction.total,
+        if (_paymentStatus == 'LUNAS')
+          'tanggal_pelunasan': formattedPelunasan,
+      };
+
+      try {
+        final headers = await AuthService.getAuthHeaders();
+        await http.put(
+          Uri.parse(updateUrl),
+          headers: headers,
+          body: jsonEncode(editPayload),
+        ).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        debugPrint("API edit PUT failed ($e).");
+      }
+
+      // Sinkronkan juga ke Supabase
+      try {
+        final supabase = Supabase.instance.client;
+        await supabase.from('transaksi').update({
+          'status': _paymentStatus,
+          'customer_name': transaction.customerName,
+          'alamat': transaction.alamat,
+          'total': transaction.total.toInt(),
+          if (_paymentStatus == 'LUNAS')
+            'tanggal_pelunasan': formattedPelunasan,
+        }).eq('id_transaksi', transaction.id_transaksi);
+      } catch (errSupabase) {
+        debugPrint("Supabase edit update error: $errSupabase");
+      }
+
+      // Kelola PelunasanHistoryService lokal
+      if (_paymentStatus == 'LUNAS') {
+        transaction.tanggalPelunasan = DateTime.now();
+        await PelunasanHistoryService.recordSettlement(
+          idTransaksi: transaction.id_transaksi,
+          customerName: transaction.customerName,
+          total: transaction.total,
+          tanggalPelunasan: DateTime.now(),
+        );
+      } else {
+        transaction.tanggalPelunasan = null;
+        await PelunasanHistoryService.removeSettlement(transaction.id_transaksi);
+      }
+
+      transaction.isOffline = false;
+      return SaveDestination.primaryServer;
+    }
+
     final url = '${ApiConfig.baseUrl}/transaksi';
 
     final formattedDate =
         DateFormat('yyyy-MM-dd HH:mm:ss').format(transaction.date);
+
+    final currentUser = AuthService.currentUser;
+    if (transaction.userId == null && currentUser != null) {
+      transaction.userId = currentUser.id;
+      transaction.userName = currentUser.name;
+    }
 
     final payload = {
       'id_transaksi': transaction.id_transaksi,
       'customerName': transaction.customerName,
       'alamat': transaction.alamat,
       'date': formattedDate,
+      'user_id': transaction.userId,
+      'user_name': transaction.userName,
       'total': transaction.total.truncateToDouble() == transaction.total
           ? transaction.total.toInt()
           : transaction.total,
@@ -447,33 +521,10 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       }
     }
 
-    // 1. Validasi Stok per Item: Blokir pembuatan nota jika stok 0 atau jumlah melebihi kuota
+    // Validasi kuantitas item minimal 1
     for (int i = 0; i < _items.length; i++) {
       final item = _items[i];
-      final tyunit = _resolveTyunit(item);
-      final matched = _products.firstWhere(
-        (p) =>
-            p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
-            p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
-        orElse: () => Item(
-          tyunit: tyunit,
-          name: item.nameController.text,
-          price: item.price,
-          stock: 0,
-        ),
-      );
-
-      final availableStock = matched.stock;
       final requestedQty = item.quantity + item.bonus;
-
-      if (availableStock <= 0) {
-        _showStockQuotaWarning(
-          'Produk "${item.nameController.text}" tidak dapat dibuatkan nota karena stoknya 0 (Habis).\n\n'
-          'Harap lakukan input stok awal armada terlebih dahulu atau hapus barang ini dari nota.',
-        );
-        return;
-      }
-
       if (requestedQty <= 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -483,61 +534,94 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
         );
         return;
       }
-
-      if (requestedQty > availableStock) {
-        _showStockQuotaWarning(
-          'Jumlah pesanan untuk "${item.nameController.text}" ($requestedQty item termasuk bonus) '
-          'melebihi stok yang tersedia ($availableStock item).\n\n'
-          'Harap kurangi jumlah pesanan atau lakukan penambahan stok awal.',
-        );
-        return;
-      }
     }
 
-    // 2. Validasi per Kelompok Komoditas Fisik Agregat (misal: beberapa varian Galon digabung)
-    final Map<String, int> groupTotalRequested = {};
-    for (final item in _items) {
-      final tyunit = _resolveTyunit(item);
-      final matched = _products.firstWhere(
-        (p) =>
-            p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
-            p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
-        orElse: () => Item(
-          tyunit: tyunit,
-          name: item.nameController.text,
-          price: item.price,
-          stock: 0,
-        ),
-      );
-      final gKey = matched.kelompok.toUpperCase();
-      if (gKey.isNotEmpty) {
-        groupTotalRequested[gKey] =
-            (groupTotalRequested[gKey] ?? 0) + item.quantity + item.bonus;
-      }
-    }
+    // 1 & 2. Validasi Kuota Stok Gudang (HANYA UNTUK TRANSAKSI BARU)
+    // Saat mengedit transaksi lama (misal: ubah BON/QRIS ke LUNAS), stok sudah berkurang saat nota dibuat
+    final isEditing = widget.transaction != null;
+    if (!isEditing) {
+      // Validasi Stok per Item
+      for (int i = 0; i < _items.length; i++) {
+        final item = _items[i];
+        final tyunit = _resolveTyunit(item);
+        final matched = _products.firstWhere(
+          (p) =>
+              p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
+              p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
+          orElse: () => Item(
+            tyunit: tyunit,
+            name: item.nameController.text,
+            price: item.price,
+            stock: 0,
+          ),
+        );
 
-    for (final entry in groupTotalRequested.entries) {
-      final gKey = entry.key;
-      final totalRequested = entry.value;
-      final matchedProduct = _products.firstWhere(
-        (p) => p.kelompok.toUpperCase() == gKey,
-        orElse: () => Item(tyunit: '', name: '', price: 0, stock: 0),
-      );
-      final groupStock = matchedProduct.stock;
-      if (groupStock <= 0) {
-        _showStockQuotaWarning(
-          'Kelompok komoditas "$gKey" memiliki stok 0 (Habis).\n\n'
-          'Tidak dapat membuat nota untuk kelompok ini sebelum stok awal diisi.',
-        );
-        return;
+        final availableStock = matched.stock;
+        final requestedQty = item.quantity + item.bonus;
+
+        if (availableStock <= 0) {
+          _showStockQuotaWarning(
+            'Produk "${item.nameController.text}" tidak dapat dibuatkan nota karena stoknya 0 (Habis).\n\n'
+            'Harap lakukan input stok awal armada terlebih dahulu atau hapus barang ini dari nota.',
+          );
+          return;
+        }
+
+        if (requestedQty > availableStock) {
+          _showStockQuotaWarning(
+            'Jumlah pesanan untuk "${item.nameController.text}" ($requestedQty item termasuk bonus) '
+            'melebihi stok yang tersedia ($availableStock item).\n\n'
+            'Harap kurangi jumlah pesanan atau lakukan penambahan stok awal.',
+          );
+          return;
+        }
       }
-      if (totalRequested > groupStock) {
-        _showStockQuotaWarning(
-          'Total permintaan komoditas "$gKey" dalam nota ini ($totalRequested item) '
-          'melebihi sisa stok armada yang tersedia ($groupStock item).\n\n'
-          'Harap sesuaikan jumlah barang.',
+
+      // Validasi per Kelompok Komoditas Fisik Agregat
+      final Map<String, int> groupTotalRequested = {};
+      for (final item in _items) {
+        final tyunit = _resolveTyunit(item);
+        final matched = _products.firstWhere(
+          (p) =>
+              p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
+              p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
+          orElse: () => Item(
+            tyunit: tyunit,
+            name: item.nameController.text,
+            price: item.price,
+            stock: 0,
+          ),
         );
-        return;
+        final gKey = matched.kelompok.toUpperCase();
+        if (gKey.isNotEmpty) {
+          groupTotalRequested[gKey] =
+              (groupTotalRequested[gKey] ?? 0) + item.quantity + item.bonus;
+        }
+      }
+
+      for (final entry in groupTotalRequested.entries) {
+        final gKey = entry.key;
+        final totalRequested = entry.value;
+        final matchedProduct = _products.firstWhere(
+          (p) => p.kelompok.toUpperCase() == gKey,
+          orElse: () => Item(tyunit: '', name: '', price: 0, stock: 0),
+        );
+        final groupStock = matchedProduct.stock;
+        if (groupStock <= 0) {
+          _showStockQuotaWarning(
+            'Kelompok komoditas "$gKey" memiliki stok 0 (Habis).\n\n'
+            'Tidak dapat membuat nota untuk kelompok ini sebelum stok awal diisi.',
+          );
+          return;
+        }
+        if (totalRequested > groupStock) {
+          _showStockQuotaWarning(
+            'Total permintaan komoditas "$gKey" dalam nota ini ($totalRequested item) '
+            'melebihi sisa stok armada yang tersedia ($groupStock item).\n\n'
+            'Harap sesuaikan jumlah barang.',
+          );
+          return;
+        }
       }
     }
 
@@ -1114,6 +1198,23 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                               _paymentStatus = status;
                             });
                           },
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          _paymentStatus == 'LUNAS'
+                              ? '• Nota LUNAS: Pembayaran tunai telah diterima kasir.'
+                              : (_paymentStatus == 'QRIS'
+                                  ? '• Nota QRIS: Pembayaran non-tunai/QRIS. Menunggu verifikasi mutasi rekening oleh Admin.'
+                                  : '• Nota BON: Pembayaran tempo/piutang. Masuk ke monitoring bon untuk ditagih.'),
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: _paymentStatus == 'LUNAS'
+                                ? AppColors.lunas
+                                : (_paymentStatus == 'QRIS'
+                                    ? const Color(0xFF1971C2)
+                                    : AppColors.bon),
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ],
                     ),

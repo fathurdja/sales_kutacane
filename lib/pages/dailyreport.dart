@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -36,13 +37,43 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   bool _loading = true;
   List<Transaction> _allTransactions = [];
   List<Transaction> _filteredTransactions = [];
-  String _statusFilter = 'SEMUA'; // 'SEMUA', 'LUNAS', 'BON', 'ALL_BON'
+  String _statusFilter = 'SEMUA'; // 'SEMUA', 'LUNAS', 'QRIS', 'BON', 'ALL_BON'
+  UserModel? _currentUser;
+  List<UserModel> _salesUsers = [];
+  int? _selectedSalesUserId;
+
+  bool get _isAdmin => _currentUser?.isUserAdmin ?? false;
 
   @override
   void initState() {
     super.initState();
     _currentDate = widget.selectedDate;
+    _loadCurrentUser();
     _fetchTransactions();
+  }
+
+  Future<void> _loadCurrentUser() async {
+    final user = await AuthService.getCurrentUser();
+    if (!mounted) return;
+    setState(() {
+      _currentUser = user;
+      // Item 4: Tutup Laporan All Time untuk sales, batasi ke hari ini
+      if (user != null && !user.isUserAdmin) {
+        _isAllDates = false;
+        _currentDate = DateTime.now();
+        _applyDateFilter();
+      }
+    });
+
+    if (user != null && user.isUserAdmin) {
+      try {
+        final users = await AuthService.fetchUsers();
+        if (!mounted) return;
+        setState(() => _salesUsers = users);
+      } catch (e) {
+        debugPrint('Error fetching sales users in daily report: $e');
+      }
+    }
   }
 
   Future<void> _fetchTransactions() async {
@@ -146,19 +177,38 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   }
 
   void _applyDateFilter() {
-    if (_isAllDates) {
-      _filteredTransactions = List.from(_allTransactions)
+    // Item 4: Jika sales, kunci selalu ke tanggal hari ini (All Time ditutup)
+    if (!_isAdmin) {
+      _isAllDates = false;
+      final now = DateTime.now();
+      final todayStr = DateFormat('yyyy-MM-dd').format(now);
+      _filteredTransactions = _allTransactions.where((trx) {
+        return DateFormat('yyyy-MM-dd').format(trx.date) == todayStr;
+      }).toList()
         ..sort((a, b) => b.date.compareTo(a.date));
       return;
     }
-    final dateStr = DateFormat('yyyy-MM-dd').format(_currentDate.toLocal());
-    _filteredTransactions = _allTransactions.where((trx) {
-      return DateFormat('yyyy-MM-dd').format(trx.date.toLocal()) == dateStr;
-    }).toList()
-      ..sort((a, b) => b.date.compareTo(a.date));
+
+    List<Transaction> list;
+    if (_isAllDates) {
+      list = List.from(_allTransactions);
+    } else {
+      final dateStr = DateFormat('yyyy-MM-dd').format(_currentDate);
+      list = _allTransactions.where((trx) {
+        return DateFormat('yyyy-MM-dd').format(trx.date) == dateStr;
+      }).toList();
+    }
+
+    // Filter Sales jika dipilih oleh Admin
+    if (_selectedSalesUserId != null) {
+      list = list.where((trx) => trx.userId == _selectedSalesUserId).toList();
+    }
+
+    _filteredTransactions = list..sort((a, b) => b.date.compareTo(a.date));
   }
 
   void _onDateSelected(DateTime date) {
+    if (!_isAdmin) return;
     setState(() {
       _isAllDates = false;
       _currentDate = date;
@@ -168,6 +218,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   }
 
   Future<void> _pickArbitraryDate() async {
+    if (!_isAdmin) return;
     final picked = await showDatePicker(
       context: context,
       initialDate: _currentDate,
@@ -182,6 +233,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   List<Transaction> get _lunasTransactions =>
       _filteredTransactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
 
+  List<Transaction> get _qrisTransactions =>
+      _filteredTransactions.where((t) => t.status.toUpperCase() == 'QRIS').toList();
+
   List<Transaction> get _bonTransactions =>
       _filteredTransactions.where((t) => t.status.toUpperCase() == 'BON').toList();
 
@@ -191,6 +245,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
   double get _omzetLunas =>
       _lunasTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  double get _omzetQris =>
+      _qrisTransactions.fold(0.0, (sum, trx) => sum + trx.total);
 
   double get _omzetBon =>
       _bonTransactions.fold(0.0, (sum, trx) => sum + trx.total);
@@ -204,6 +261,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   List<Transaction> get _displayedTransactions {
     if (_statusFilter == 'LUNAS') {
       return _lunasTransactions;
+    } else if (_statusFilter == 'QRIS') {
+      return _qrisTransactions;
     } else if (_statusFilter == 'BON') {
       return _bonTransactions;
     } else if (_statusFilter == 'ALL_BON') {
@@ -221,8 +280,10 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
 
     final lunasList = transactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
+    final qrisList = transactions.where((t) => t.status.toUpperCase() == 'QRIS').toList();
     final bonList = transactions.where((t) => t.status.toUpperCase() == 'BON').toList();
     final totalLunas = lunasList.fold(0.0, (sum, trx) => sum + trx.total);
+    final totalQris = qrisList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalBon = bonList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalDaily = transactions.fold(0.0, (sum, trx) => sum + trx.total);
 
@@ -251,7 +312,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         },
         build: (context) {
           return [
-            // KOTAK RINGKASAN OMZET LUNAS & PIUTANG BON
+            // KOTAK RINGKASAN OMZET LUNAS, QRIS & PIUTANG BON
             pw.Container(
               margin: const pw.EdgeInsets.only(bottom: 14),
               padding: const pw.EdgeInsets.all(10),
@@ -273,6 +334,14 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                     children: [
                       pw.Text("• Omzet Lunas (Tunai) [${lunasList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.green900)),
                       pw.Text(currencyFormat.format(totalLunas), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+                    ],
+                  ),
+                  pw.SizedBox(height: 3),
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text("• Omzet QRIS [${qrisList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.blue900)),
+                      pw.Text(currencyFormat.format(totalQris), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.blue900)),
                     ],
                   ),
                   pw.SizedBox(height: 3),
@@ -445,6 +514,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       buffer.writeln("");
       buffer.writeln("RINGKASAN OMZET & PIUTANG,,,,,,,,,");
       buffer.writeln("TOTAL OMZET LUNAS,,,,,$_omzetLunas,(${_lunasTransactions.length} Nota Lunas)");
+      buffer.writeln("TOTAL OMZET QRIS,,,,,$_omzetQris,(${_qrisTransactions.length} Nota QRIS)");
       buffer.writeln("TOTAL PIUTANG BON (TANGGAL INI),,,,,$_omzetBon,(${_bonTransactions.length} Nota Bon)");
       buffer.writeln("TOTAL PIUTANG BON BERJALAN (MONITORING BON),,,,,$_totalPiutangBonBerjalan,(${_allActiveBonTransactions.length} Nota Bon Aktif)");
       buffer.writeln("TOTAL KESELURUHAN OMZET,,,,,$_totalKeseluruhan,(${_filteredTransactions.length} Total Nota)");
@@ -516,9 +586,11 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isAllDates ? 'Laporan (Semua Tanggal)' : 'Laporan Harian'),
+        title: Text(!_isAdmin
+            ? 'Laporan Hari Ini'
+            : (_isAllDates ? 'Laporan (Semua Tanggal)' : 'Laporan Harian')),
         actions: [
-          if (_allActiveBonTransactions.isNotEmpty)
+          if (_allActiveBonTransactions.isNotEmpty && _isAdmin)
             IconButton(
               icon: const Icon(Icons.pending_actions_rounded, color: AppColors.bon),
               tooltip: 'Monitoring Bon (${_allActiveBonTransactions.length} Nota)',
@@ -529,11 +601,12 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                 ).then((_) => _fetchTransactions());
               },
             ),
-          IconButton(
-            icon: const Icon(Icons.calendar_month_outlined),
-            tooltip: 'Pilih Tanggal',
-            onPressed: _pickArbitraryDate,
-          ),
+          if (_isAdmin)
+            IconButton(
+              icon: const Icon(Icons.calendar_month_outlined),
+              tooltip: 'Pilih Tanggal',
+              onPressed: _pickArbitraryDate,
+            ),
         ],
       ),
       body: RefreshIndicator(
@@ -541,8 +614,109 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         color: AppColors.primary,
         child: Column(
           children: [
-            // HORIZONTAL DATE STRIP
-            _buildHorizontalDateStrip(),
+            // HORIZONTAL DATE STRIP ATAU BANNER HARI INI
+            if (_isAdmin)
+              _buildHorizontalDateStrip()
+            else
+              Container(
+                margin: const EdgeInsets.fromLTRB(AppSpacing.screenMargin, 10, AppSpacing.screenMargin, 0),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(AppRadius.card),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.today_rounded, size: 20, color: AppColors.primary),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Laporan Hari Ini (Khusus Sales)',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          Text(
+                            DateFormat('EEEE, dd MMMM yyyy', 'id_ID').format(DateTime.now()),
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text(
+                        'Hari Ini',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Filter Sales Khusus Admin
+            if (_isAdmin && _salesUsers.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.fromLTRB(AppSpacing.screenMargin, 8, AppSpacing.screenMargin, 4),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      const Text(
+                        'Sales: ',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Semua Sales'),
+                        selected: _selectedSalesUserId == null,
+                        onSelected: (_) {
+                          setState(() {
+                            _selectedSalesUserId = null;
+                            _applyDateFilter();
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 6),
+                      ..._salesUsers.where((u) => !u.isAdmin).map((u) {
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: ChoiceChip(
+                            label: Text(u.name),
+                            selected: _selectedSalesUserId == u.id,
+                            onSelected: (_) {
+                              setState(() {
+                                _selectedSalesUserId = u.id;
+                                _applyDateFilter();
+                              });
+                            },
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ),
 
             Expanded(
               child: _loading
@@ -650,7 +824,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                                     ? (_isAllDates
                                         ? 'Tidak ada riwayat transaksi yang tercatat di sistem.'
                                         : 'Tidak ada transaksi yang tercatat pada tanggal ${DateFormat('dd MMMM yyyy').format(_currentDate)}.')
-                                    : 'Tidak ada transaksi berstatus ${_statusFilter == 'LUNAS' ? 'LUNAS' : 'BON'} pada tanggal ini.',
+                                    : 'Tidak ada transaksi berstatus ${_statusFilter == 'LUNAS' ? 'LUNAS' : (_statusFilter == 'QRIS' ? 'QRIS' : 'BON')} pada tanggal ini.',
                           )
                         else
                           ListView.separated(
@@ -754,7 +928,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               ),
               const SizedBox(height: 4),
               Text(
-                'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})',
+                'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • QRIS: ${_qrisTransactions.length} Nota (${currencyFormat.format(_omzetQris)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.85),
                   fontSize: 11.5,
@@ -766,132 +940,48 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
         const SizedBox(height: 10),
 
-        // 2. KARTU RINCIAN: OMSET LUNAS (TUNAI) & PIUTANG BON (BELUM LUNAS)
+        // 2. KARTU RINCIAN 3-PILIHAN: LUNAS (TUNAI), QRIS, & PIUTANG BON
         Row(
           children: [
             // KARTU LUNAS (TUNAI)
             Expanded(
-              child: InkWell(
-                onTap: () {
-                  setState(() {
-                    _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS';
-                  });
-                },
-                borderRadius: BorderRadius.circular(AppRadius.card),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: _statusFilter == 'LUNAS' ? AppColors.lunas.withOpacity(0.18) : AppColors.lunasBg,
-                    borderRadius: BorderRadius.circular(AppRadius.card),
-                    border: Border.all(
-                      color: _statusFilter == 'LUNAS' ? AppColors.lunas : AppColors.lunas.withOpacity(0.35),
-                      width: _statusFilter == 'LUNAS' ? 2 : 1,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Omzet Lunas',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.lunas,
-                            ),
-                          ),
-                          Icon(Icons.check_circle, size: 16, color: AppColors.lunas),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          currencyFormat.format(_omzetLunas),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.lunas,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${_lunasTransactions.length} Nota Lunas',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textSecondary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              child: _buildBreakdownItemCard(
+                title: 'Lunas',
+                countText: '${_lunasTransactions.length} Nota',
+                amountText: currencyFormat.format(_omzetLunas),
+                icon: Icons.check_circle_outline,
+                color: AppColors.lunas,
+                bgColor: AppColors.lunasBg,
+                isSelected: _statusFilter == 'LUNAS',
+                onTap: () => setState(() => _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS'),
               ),
             ),
-            const SizedBox(width: 10),
-            // KARTU BON (BELUM LUNAS)
+            const SizedBox(width: 8),
+            // KARTU QRIS
             Expanded(
-              child: InkWell(
-                onTap: () {
-                  setState(() {
-                    _statusFilter = _statusFilter == 'BON' ? 'SEMUA' : 'BON';
-                  });
-                },
-                borderRadius: BorderRadius.circular(AppRadius.card),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: _statusFilter == 'BON' ? AppColors.bon.withOpacity(0.18) : AppColors.bonBg,
-                    borderRadius: BorderRadius.circular(AppRadius.card),
-                    border: Border.all(
-                      color: _statusFilter == 'BON' ? AppColors.bon : AppColors.bon.withOpacity(0.35),
-                      width: _statusFilter == 'BON' ? 2 : 1,
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            _isAllDates ? 'Piutang Bon' : 'Bon Tanggal Ini',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.bon,
-                            ),
-                          ),
-                          const Icon(Icons.pending_actions_rounded, size: 16, color: AppColors.bon),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          currencyFormat.format(_omzetBon),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: AppColors.bon,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${_bonTransactions.length} Nota Bon',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textSecondary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+              child: _buildBreakdownItemCard(
+                title: 'QRIS',
+                countText: '${_qrisTransactions.length} Nota',
+                amountText: currencyFormat.format(_omzetQris),
+                icon: Icons.qr_code_2_rounded,
+                color: AppColors.qris,
+                bgColor: AppColors.qrisBg,
+                isSelected: _statusFilter == 'QRIS',
+                onTap: () => setState(() => _statusFilter = _statusFilter == 'QRIS' ? 'SEMUA' : 'QRIS'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // KARTU BON
+            Expanded(
+              child: _buildBreakdownItemCard(
+                title: 'Bon',
+                countText: '${_bonTransactions.length} Nota',
+                amountText: currencyFormat.format(_omzetBon),
+                icon: Icons.pending_actions_rounded,
+                color: AppColors.bon,
+                bgColor: AppColors.bonBg,
+                isSelected: _statusFilter == 'BON',
+                onTap: () => setState(() => _statusFilter = _statusFilter == 'BON' ? 'SEMUA' : 'BON'),
               ),
             ),
           ],
@@ -1008,6 +1098,74 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     );
   }
 
+  Widget _buildBreakdownItemCard({
+    required String title,
+    required String countText,
+    required String amountText,
+    required IconData icon,
+    required Color color,
+    required Color bgColor,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppRadius.card),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withOpacity(0.18) : bgColor,
+          borderRadius: BorderRadius.circular(AppRadius.card),
+          border: Border.all(
+            color: isSelected ? color : color.withOpacity(0.35),
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: color,
+                  ),
+                ),
+                Icon(icon, size: 15, color: color),
+              ],
+            ),
+            const SizedBox(height: 6),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                amountText,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                  color: color,
+                ),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              countText,
+              style: const TextStyle(
+                fontSize: 10.5,
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFilterChips() {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -1032,6 +1190,18 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
             selectedColor: AppColors.lunas,
             labelStyle: TextStyle(
               color: _statusFilter == 'LUNAS' ? Colors.white : AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11.5,
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: Text('QRIS (${_qrisTransactions.length})'),
+            selected: _statusFilter == 'QRIS',
+            onSelected: (_) => setState(() => _statusFilter = 'QRIS'),
+            selectedColor: AppColors.qris,
+            labelStyle: TextStyle(
+              color: _statusFilter == 'QRIS' ? Colors.white : AppColors.textPrimary,
               fontWeight: FontWeight.w600,
               fontSize: 11.5,
             ),

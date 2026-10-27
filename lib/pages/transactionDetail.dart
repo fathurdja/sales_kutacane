@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TransactionDetailPage extends StatefulWidget {
   final Transaction transaction;
@@ -19,6 +25,7 @@ class TransactionDetailPage extends StatefulWidget {
 class _TransactionDetailPageState extends State<TransactionDetailPage> {
   late Transaction _currentTransaction;
   bool _isGeneratingPdf = false;
+  bool _isDeleting = false;
 
   @override
   void initState() {
@@ -52,12 +59,98 @@ class _TransactionDetailPageState extends State<TransactionDetailPage> {
     );
   }
 
+  Future<void> _confirmDeleteTransaction(BuildContext context) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever_rounded, color: AppColors.error, size: 26),
+            SizedBox(width: 8),
+            Text('Hapus Transaksi?'),
+          ],
+        ),
+        content: Text(
+          'Apakah Anda yakin ingin menghapus nota ${_currentTransaction.id_transaksi} atas nama ${_currentTransaction.customerName}?\n\n'
+          'Fitur ini digunakan jika terjadi salah input atau transaksi terinput dua kali oleh sales.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Hapus Transaksi'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    final id = _currentTransaction.id_transaksi;
+    setState(() => _isDeleting = true);
+
+    try {
+      // 1. Hapus dari server API Laravel
+      final url = '${ApiConfig.baseUrl}/transaksi/$id';
+      final authHeaders = await AuthService.getAuthHeaders();
+      try {
+        await http.delete(
+          Uri.parse(url),
+          headers: authHeaders,
+        ).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        debugPrint("API delete error: $e");
+      }
+
+      // 2. Hapus dari Supabase
+      try {
+        final supabase = Supabase.instance.client;
+        await supabase.from('transaksi_items').delete().eq('id_transaksi', id);
+        await supabase.from('transaksi').delete().eq('id_transaksi', id);
+      } catch (errSupabase) {
+        debugPrint("Supabase delete error: $errSupabase");
+      }
+
+      // 3. Hapus dari offline cache jika ada
+      await OfflineSyncService.removePendingTransaction(id);
+
+      // 4. Hapus dari riwayat pelunasan jika ada
+      await PelunasanHistoryService.removeSettlement(id);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Nota $id berhasil dihapus'),
+          backgroundColor: AppColors.lunas,
+        ),
+      );
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal menghapus transaksi: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isDeleting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final currencyFormat = NumberFormat.currency(
       locale: 'id_ID',
       symbol: 'Rp ',
     );
+
+    final isAdmin = AuthService.currentUser?.isAdmin == true;
 
     return Scaffold(
       appBar: AppBar(
@@ -88,6 +181,18 @@ class _TransactionDetailPageState extends State<TransactionDetailPage> {
               }
             },
           ),
+          if (isAdmin)
+            IconButton(
+              icon: _isDeleting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.error),
+                    )
+                  : const Icon(Icons.delete_outline, color: AppColors.error),
+              tooltip: 'Hapus Transaksi (Khusus Admin)',
+              onPressed: _isDeleting ? null : () => _confirmDeleteTransaction(context),
+            ),
         ],
       ),
       body: Column(

@@ -161,9 +161,11 @@ class PdfInvoiceService {
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
                       pw.Text(
-                        transaction.status == 'LUNAS'
+                        transaction.status.toUpperCase() == 'LUNAS'
                             ? 'FAKTUR PENJUALAN - NOTA LUNAS'
-                            : 'FAKTUR PENJUALAN - NOTA BON',
+                            : (transaction.status.toUpperCase() == 'QRIS'
+                                ? 'FAKTUR PENJUALAN - NOTA QRIS'
+                                : 'FAKTUR PENJUALAN - NOTA BON'),
                         style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
                       ),
                       pw.SizedBox(height: 4),

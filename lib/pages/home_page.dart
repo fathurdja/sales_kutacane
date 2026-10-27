@@ -106,7 +106,7 @@ class HomePageState extends State<HomePage> {
             .length;
 
         final serverToday = allServerTransactions.where((trx) {
-          return DateFormat('yyyy-MM-dd').format(trx.date.toLocal()) == todayStr;
+          return DateFormat('yyyy-MM-dd').format(trx.date) == todayStr;
         }).toList();
 
         // Gabungkan transaksi server dan transaksi offline lokal yang belum tersinkron

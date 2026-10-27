@@ -14,6 +14,7 @@ class StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLunas = status.toUpperCase() == 'LUNAS';
+    final isQris = status.toUpperCase() == 'QRIS';
     final isCadangan = status.toUpperCase() == 'CADANGAN';
 
     final Color bg;
@@ -28,6 +29,10 @@ class StatusChip extends StatelessWidget {
       bg = AppColors.lunasBg;
       fg = AppColors.lunas;
       icon = Icons.check_circle_outline;
+    } else if (isQris) {
+      bg = const Color(0xFFE7F5FF);
+      fg = const Color(0xFF1971C2);
+      icon = Icons.qr_code_2_rounded;
     } else {
       bg = AppColors.bonBg;
       fg = AppColors.bon;
@@ -36,7 +41,9 @@ class StatusChip extends StatelessWidget {
 
     final displayText = isCadangan
         ? 'CADANGAN'
-        : (isLunas ? 'NOTA LUNAS' : 'NOTA BON');
+        : (isLunas
+            ? 'NOTA LUNAS'
+            : (isQris ? 'NOTA QRIS' : 'NOTA BON'));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -281,6 +288,31 @@ class TransactionCard extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (transaction?.userName != null && transaction!.userName!.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryLight,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.person_outline, size: 11, color: AppColors.primary),
+                        const SizedBox(width: 3),
+                        Text(
+                          transaction!.userName!,
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 8),
                 const Icon(Icons.calendar_today_outlined,
                     size: 14, color: AppColors.textSecondary),
@@ -515,6 +547,7 @@ class PaymentSegmentedControl extends StatelessWidget {
         children: [
           _segment('LUNAS', Icons.check_circle_outline, AppColors.lunas),
           _segment('BON', Icons.schedule, AppColors.bon),
+          _segment('QRIS', Icons.qr_code_2_rounded, const Color(0xFF1971C2)),
         ],
       ),
     );

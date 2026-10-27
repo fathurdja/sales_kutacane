@@ -12,15 +12,18 @@ import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/daily_closing_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 enum TransactionQuickFilter {
   all,
   today,
   thisWeek,
   bonOnly,
+  qrisOnly,
 }
 
 class TransactionListPageBackup extends StatefulWidget {
@@ -115,6 +118,18 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
               (json) => Transaction.fromJson(json as Map<String, dynamic>),
             )
             .toList();
+
+        // Sinkronkan status pelunasan dengan PelunasanHistoryService
+        final historyMap = await PelunasanHistoryService.loadHistory();
+        for (final t in serverTransactions) {
+          if (historyMap.containsKey(t.id_transaksi)) {
+            final rec = historyMap[t.id_transaksi]!;
+            t.status = 'LUNAS';
+            t.tanggalPelunasan = rec.tanggalPelunasan;
+          } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
+            t.tanggalPelunasan = t.date;
+          }
+        }
 
         // Gabungkan transaksi server dan offline (tanpa duplikat ID)
         final Set<String> serverIds =
@@ -218,6 +233,11 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
 
     setState(() {
       _filteredTransactions = _transactions.where((trx) {
+        // 0. Filter Sales Armada jika dipilih oleh Admin
+        if (_selectedSalesUserId != null) {
+          if (trx.userId != null && trx.userId != _selectedSalesUserId) return false;
+        }
+
         // 1. Text Search Filter (Nama Konsumen atau ID Transaksi)
         if (query.isNotEmpty) {
           final matchName = trx.customerName.toLowerCase().contains(query);
@@ -243,6 +263,8 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
             return trx.date.isAfter(startOfWeekDate.subtract(const Duration(seconds: 1)));
           case TransactionQuickFilter.bonOnly:
             return trx.status.toUpperCase() == 'BON';
+          case TransactionQuickFilter.qrisOnly:
+            return trx.status.toUpperCase() == 'QRIS';
         }
       }).toList();
     });
@@ -272,13 +294,24 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
   }
 
   Future<void> _deleteTransaction(Transaction trx) async {
+    final isAdmin = _currentUser?.isUserAdmin ?? false;
+    if (!isAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hanya Admin yang memiliki hak akses menghapus transaksi.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Hapus Transaksi?'),
         content: Text(
           'Apakah Anda yakin ingin menghapus nota ${trx.id_transaksi} atas nama ${trx.customerName}?\n\n'
-          'Stok produk pada nota ini akan otomatis dikembalikan ke kuota master.',
+          'Tindakan ini hanya dapat dilakukan oleh Admin (misal untuk transaksi yang terinput dua kali).',
         ),
         actions: [
           TextButton(
@@ -303,7 +336,7 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
       if (trx.isOffline) {
         await OfflineSyncService.removePendingTransaction(id);
       } else {
-        // Hapus via Laravel API dengan Auth Header
+        // 1. Hapus via Laravel API dengan Auth Header
         final url = '${ApiConfig.baseUrl}/transaksi/$id';
         final authHeaders = await AuthService.getAuthHeaders();
         final response = await http.delete(
@@ -318,6 +351,18 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
           throw Exception('Server mengembalikan kode: ${response.statusCode}');
         }
       }
+
+      // 2. Hapus juga dari Supabase Backup jika tersimpan
+      try {
+        final supabase = Supabase.instance.client;
+        await supabase.from('transaksi_items').delete().eq('id_transaksi', id);
+        await supabase.from('transaksi').delete().eq('id_transaksi', id);
+      } catch (errSupabase) {
+        debugPrint('Catatan Supabase delete: $errSupabase');
+      }
+
+      // 3. Bersihkan dari riwayat pelunasan jika ada
+      await PelunasanHistoryService.removeSettlement(id);
 
       setState(() {
         _transactions.removeWhere((t) => t.id_transaksi == id || t.id == id);
@@ -419,6 +464,7 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
   }
 
   Future<void> _showDailyClosingDialog() async {
+    if (_currentUser?.isUserAdmin != true) return;
     setState(() => _isProcessing = true);
     DailyClosingPreview preview;
     try {
@@ -783,19 +829,20 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
               }
             },
             itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'closing',
-                child: Row(
-                  children: [
-                    Icon(Icons.event_repeat_rounded, size: 20, color: AppColors.primary),
-                    SizedBox(width: 10),
-                    Text(
-                      'Tutup Buku & Rollover Stok',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ],
+              if (_currentUser?.isUserAdmin == true)
+                const PopupMenuItem(
+                  value: 'closing',
+                  child: Row(
+                    children: [
+                      Icon(Icons.event_repeat_rounded, size: 20, color: AppColors.primary),
+                      SizedBox(width: 10),
+                      Text(
+                        'Tutup Buku & Rollover Stok',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
               const PopupMenuItem(
                 value: 'export',
                 child: Row(
@@ -806,19 +853,20 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
                   ],
                 ),
               ),
-              const PopupMenuItem(
-                value: 'deleteAll',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete_sweep_outlined, size: 20, color: AppColors.error),
-                    SizedBox(width: 10),
-                    Text(
-                      'Hapus Semua Data',
-                      style: TextStyle(color: AppColors.error),
-                    ),
-                  ],
+              if (_currentUser?.isUserAdmin == true)
+                const PopupMenuItem(
+                  value: 'deleteAll',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_sweep_outlined, size: 20, color: AppColors.error),
+                      SizedBox(width: 10),
+                      Text(
+                        'Hapus Semua Data',
+                        style: TextStyle(color: AppColors.error),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
             ],
           ),
         ],
@@ -959,6 +1007,19 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
                                 onSelected: () {
                                   setState(() {
                                     _quickFilter = TransactionQuickFilter.bonOnly;
+                                    _filterDate = null;
+                                  });
+                                  _applyFilter();
+                                },
+                              ),
+                              const SizedBox(width: 8),
+                              _buildFilterChip(
+                                label: 'QRIS Saja',
+                                selected: _quickFilter == TransactionQuickFilter.qrisOnly &&
+                                    _filterDate == null,
+                                onSelected: () {
+                                  setState(() {
+                                    _quickFilter = TransactionQuickFilter.qrisOnly;
                                     _filterDate = null;
                                   });
                                   _applyFilter();
@@ -1134,7 +1195,9 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
                                         fetchTransactions();
                                       }
                                     },
-                                    onLongPress: () => _deleteTransaction(trx),
+                                    onLongPress: (_currentUser?.isUserAdmin == true)
+                                        ? () => _deleteTransaction(trx)
+                                        : null,
                                   );
                                 },
                               ),

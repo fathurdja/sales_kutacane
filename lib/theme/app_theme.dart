@@ -32,6 +32,10 @@ class AppColors {
   static const Color bon = Color(0xFFF59F00);
   static const Color bonBg = Color(0xFFFFF4E0);
 
+  // Status: QRIS
+  static const Color qris = Color(0xFF1971C2);
+  static const Color qrisBg = Color(0xFFE7F5FF);
+
   // Info
   static const Color info = primary;
   static const Color infoBg = primaryLight;
