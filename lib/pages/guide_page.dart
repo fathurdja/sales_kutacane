@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:kasir_kutacane/pages/arsip.dart';
 import 'package:kasir_kutacane/pages/dailyreport.dart';
+import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/transactionInput.dart';
+import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 
 class GuidePage extends StatefulWidget {
@@ -19,7 +21,7 @@ class _GuidePageState extends State<GuidePage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -32,7 +34,7 @@ class _GuidePageState extends State<GuidePage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Panduan & Alur Kasir'),
+        title: const Text('Panduan & Peran Kasir'),
         actions: [
           IconButton(
             icon: const Icon(Icons.slideshow_outlined),
@@ -46,14 +48,19 @@ class _GuidePageState extends State<GuidePage>
           unselectedLabelColor: AppColors.textSecondary,
           indicatorColor: AppColors.primary,
           indicatorWeight: 3,
+          isScrollable: false,
           tabs: const [
+            Tab(
+              icon: Icon(Icons.badge_outlined, size: 20),
+              text: 'Peran Pengguna',
+            ),
             Tab(
               icon: Icon(Icons.timeline, size: 20),
               text: 'Alur Operasional',
             ),
             Tab(
               icon: Icon(Icons.help_center_outlined, size: 20),
-              text: 'Tips & Tanya Jawab',
+              text: 'Tanya Jawab',
             ),
           ],
         ),
@@ -61,6 +68,7 @@ class _GuidePageState extends State<GuidePage>
       body: TabBarView(
         controller: _tabController,
         children: [
+          _buildRolesTab(),
           _buildFlowTab(),
           _buildFaqTab(),
         ],
@@ -69,9 +77,588 @@ class _GuidePageState extends State<GuidePage>
   }
 
   // ==========================================
-  // TAB 1: ALUR OPERASIONAL (STEP-BY-STEP)
+  // TAB 1: PERAN PENGGUNA (ADMIN VS SALES)
+  // ==========================================
+  Widget _buildRolesTab() {
+    final currentUser = AuthService.currentUser;
+    final isAdmin = currentUser?.isAdmin == true;
+
+    return ListView(
+      padding: const EdgeInsets.all(AppSpacing.screenMargin),
+      children: [
+        // CURRENT USER STATUS CARD
+        Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: isAdmin
+                  ? [const Color(0xFF6741D9), const Color(0xFF7950F2)]
+                  : [AppColors.primary, const Color(0xFF0C9488)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            boxShadow: AppShadow.elevated,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isAdmin ? Icons.admin_panel_settings : Icons.badge_outlined,
+                  color: Colors.white,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          isAdmin ? 'AKUN ADMIN' : 'AKUN SALES ARMADA',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.8,
+                            color: Colors.white.withValues(alpha: 0.9),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'AKTIF',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      currentUser?.name ?? 'Pengguna Kasir',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isAdmin
+                          ? 'Wewenang Penuh: Kelola Stok, Monitoring Tim & Rekap Omzet'
+                          : 'Operasional Lapangan: Buat Nota, Tagih Bon & Pantau Omzet Sendiri',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.85),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xl),
+
+        // SECTION HEADER
+        const Text(
+          'Dua Peran Utama dalam Aplikasi',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Aplikasi memisahkan wewenang secara ketat antara Manajemen (Admin) dan Operasional Lapangan (Sales):',
+          style: TextStyle(
+            fontSize: 13,
+            color: AppColors.textSecondary,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+
+        // CARD PERAN 1: ADMIN
+        _roleCard(
+          roleTitle: '1. Peran ADMIN (Manajemen & Gudang)',
+          badgeText: 'HAK AKSES PENUH',
+          badgeColor: const Color(0xFF6741D9),
+          badgeBgColor: const Color(0xFFF3F0FF),
+          themeColor: const Color(0xFF6741D9),
+          icon: Icons.admin_panel_settings_rounded,
+          summary:
+              'Admin bertanggung jawab atas pengaturan stok fisik, pengawasan performa penjualan seluruh armada sales, serta pembukuan keuangan.',
+          duties: [
+            {
+              'title': 'Kelola Stok Awal & Stok Masuk',
+              'desc':
+                  'Admin dapat menetapkan "Set Stok Awal" (mereset baseline fisik) serta menambah "Stok Masuk" (menambah stok sisa tanpa mengurangi barang yang telah terjual).'
+            },
+            {
+              'title': 'Visibilitas Angka Kuota Stok',
+              'desc':
+                  'Admin dapat melihat angka nominal stok gudang secara detail (contoh: "Stok Tersedia: 105") baik di Beranda, Manajemen Stok, maupun formulir Nota.'
+            },
+            {
+              'title': 'Laporan Omzet Terpisah (Lunas vs Bon)',
+              'desc':
+                  'Di menu Laporan Harian, Admin melihat rincian terpisah antara: Total Omzet Keseluruhan, Omzet Lunas (Uang Kas Masuk), dan Omzet Bon (Piutang Belum Bayar).'
+            },
+            {
+              'title': 'Monitoring Seluruh Sales Armada',
+              'desc':
+                  'Admin dapat memfilter dan menganalisis rekap penjualan per sales user untuk memantau performa masing-masing armada di lapangan.'
+            },
+            {
+              'title': 'Pelunasan Bon & Status Failover Cloud',
+              'desc':
+                  'Admin dapat mengakses menu Pelunasan untuk konfirmasi piutang toko, serta memantau status koneksi server utama vs server cadangan Supabase.'
+            },
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xl),
+
+        // CARD PERAN 2: SALES
+        _roleCard(
+          roleTitle: '2. Peran SALES (Armada & Kasir Lapangan)',
+          badgeText: 'OPERASIONAL NOTA',
+          badgeColor: AppColors.primary,
+          badgeBgColor: AppColors.primaryLight,
+          themeColor: AppColors.primary,
+          icon: Icons.storefront_rounded,
+          summary:
+              'Sales fokus melayani pelanggan, mencatat transaksi penjualan di toko/lapangan, menagih bon, dan mencetak struk fisik via Bluetooth.',
+          duties: [
+            {
+              'title': 'Pembuatan Nota Cepat & Validasi Stok',
+              'desc':
+                  'Sales membuat nota untuk toko dengan opsi pembayaran LUNAS atau BON. Sistem otomatis memblokir pembuatan nota jika stok produk 0.'
+            },
+            {
+              'title': 'Perlindungan Privasi Stok Gudang',
+              'desc':
+                  'Sales TIDAK DAPAT melihat nominal stok gudang yang di-input admin. Di layar sales hanya tertera status ketersediaan: "Stok Tersedia" atau "Stok Habis (0)".'
+            },
+            {
+              'title': 'Pantau Omzet & Unit Terjual Sendiri',
+              'desc':
+                  'Sales tetap dapat melihat omzet hasil penjualan pribadinya hari ini serta jumlah produk yang telah terjual untuk mengetahui target harian.'
+            },
+            {
+              'title': 'Menu Pelunasan Bon di Toko',
+              'desc':
+                  'Saat menagih piutang di toko pelanggan, Sales dapat membuka menu Pelunasan, mengisi tanggal pelunasan, dan langsung mencetak struk fisik tanda lunas.'
+            },
+            {
+              'title': 'Mode Offline & Sinkronisasi Otomatis',
+              'desc':
+                  'Jika sales berada di daerah blank spot tanpa sinyal internet, nota tetap tersimpan di memori HP dan otomatis terkirim begitu terhubung internet.'
+            },
+          ],
+        ),
+        const SizedBox(height: AppSpacing.xxl),
+
+        // SECTION: TABEL MATRIKS HAK AKSES
+        const Text(
+          'Matriks Perbandingan Hak Akses',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Ringkasan komparasi fitur yang dapat diakses oleh Admin vs Sales:',
+          style: TextStyle(
+            fontSize: 13,
+            color: AppColors.textSecondary,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+
+        _permissionMatrixTable(),
+        const SizedBox(height: 80),
+      ],
+    );
+  }
+
+  Widget _roleCard({
+    required String roleTitle,
+    required String badgeText,
+    required Color badgeColor,
+    required Color badgeBgColor,
+    required Color themeColor,
+    required IconData icon,
+    required String summary,
+    required List<Map<String, String>> duties,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.surfaceBorder),
+        boxShadow: AppShadow.card,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            decoration: BoxDecoration(
+              color: badgeBgColor.withValues(alpha: 0.6),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(AppRadius.card - 1),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: themeColor.withValues(alpha: 0.15),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Icon(icon, color: themeColor, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    roleTitle,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: themeColor,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: badgeColor,
+                    borderRadius: BorderRadius.circular(AppRadius.chipFull),
+                  ),
+                  child: Text(
+                    badgeText,
+                    style: const TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  summary,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textPrimary,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                const Divider(height: 1),
+                const SizedBox(height: AppSpacing.md),
+                const Text(
+                  'Fitur & Wewenang Utama:',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...duties.map((duty) => Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.check_circle_rounded,
+                            size: 16,
+                            color: themeColor,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textPrimary,
+                                  height: 1.4,
+                                ),
+                                children: [
+                                  TextSpan(
+                                    text: '${duty['title']}: ',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  TextSpan(
+                                    text: duty['desc'],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    )),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _permissionMatrixTable() {
+    final rows = [
+      {
+        'feature': 'Set Stok Awal (Reset Baseline)',
+        'admin': true,
+        'sales': false,
+        'note': 'Hanya Admin'
+      },
+      {
+        'feature': 'Tambah Stok Masuk (Akumulatif)',
+        'admin': true,
+        'sales': false,
+        'note': 'Hanya Admin'
+      },
+      {
+        'feature': 'Lihat Angka Sisa Stok Gudang',
+        'admin': true,
+        'sales': false,
+        'note': 'Sales: status saja'
+      },
+      {
+        'feature': 'Buat Nota Penjualan (Lunas / Bon)',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+      {
+        'feature': 'Validasi Blokir Stok 0',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+      {
+        'feature': 'Cetak Struk Bluetooth & PDF Stempel',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+      {
+        'feature': 'Menu Pelunasan Bon & Cetak Bukti',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+      {
+        'feature': 'Lihat Omzet Penjualan Pribadi',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+      {
+        'feature': 'Lihat Omzet Terpisah (Lunas vs Bon)',
+        'admin': true,
+        'sales': true,
+        'note': 'Di Laporan Harian'
+      },
+      {
+        'feature': 'Filter Rekap Seluruh Sales Armada',
+        'admin': true,
+        'sales': false,
+        'note': 'Hanya Admin'
+      },
+      {
+        'feature': 'Ekspor Data CSV & Riwayat Arsip',
+        'admin': true,
+        'sales': true,
+        'note': 'Semua Peran'
+      },
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.surfaceBorder),
+        boxShadow: AppShadow.card,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        child: Table(
+          columnWidths: const {
+            0: FlexColumnWidth(4.5),
+            1: FlexColumnWidth(2.0),
+            2: FlexColumnWidth(2.0),
+          },
+          border: TableBorder(
+            horizontalInside: BorderSide(
+              color: AppColors.surfaceBorder.withValues(alpha: 0.6),
+              width: 1,
+            ),
+          ),
+          children: [
+            // Header Row
+            TableRow(
+              decoration: const BoxDecoration(
+                color: Color(0xFFF1F5F9),
+              ),
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Text(
+                    'Fitur Aplikasi',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                  child: Text(
+                    'Admin',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.purple.shade700,
+                    ),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                  child: Text(
+                    'Sales',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            // Data Rows
+            ...rows.map((r) {
+              final adminCan = r['admin'] as bool;
+              final salesCan = r['sales'] as bool;
+
+              return TableRow(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 9),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          r['feature'] as String,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                        Text(
+                          r['note'] as String,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 9),
+                    child: Center(
+                      child: Icon(
+                        adminCan
+                            ? Icons.check_circle_rounded
+                            : Icons.cancel_rounded,
+                        color: adminCan
+                            ? const Color(0xFF12B886)
+                            : const Color(0xFFFA5252),
+                        size: 18,
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 9),
+                    child: Center(
+                      child: Icon(
+                        salesCan
+                            ? Icons.check_circle_rounded
+                            : Icons.cancel_rounded,
+                        color: salesCan
+                            ? const Color(0xFF12B886)
+                            : const Color(0xFFFA5252),
+                        size: 18,
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // TAB 2: ALUR OPERASIONAL (STEP-BY-STEP)
   // ==========================================
   Widget _buildFlowTab() {
+    final isAdmin = AuthService.currentUser?.isAdmin == true;
+
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.screenMargin),
       children: [
@@ -112,7 +699,7 @@ class _GuidePageState extends State<GuidePage>
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '5 langkah terpadu operasional kasir harian',
+                      '6 langkah terpadu operasional kasir & penjualan',
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.white.withValues(alpha: 0.85),
@@ -145,7 +732,7 @@ class _GuidePageState extends State<GuidePage>
 
         // SECTION HEADER
         const Text(
-          'Langkah-Langkah Operasional',
+          'Langkah-Langkah Operasional Kasir',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w800,
@@ -162,38 +749,48 @@ class _GuidePageState extends State<GuidePage>
         ),
         const SizedBox(height: AppSpacing.lg),
 
-        // STEP 1
+        // STEP 1: KELOLA STOK (KHUSUS ADMIN)
         _stepCard(
           stepNumber: 1,
+          tagText: 'KHUSUS ADMIN',
+          tagColor: Colors.purple,
           icon: Icons.inventory_2_outlined,
           color: const Color(0xFF3B5BDB),
           bgColor: const Color(0xFFEDF2FF),
-          title: 'Periksa & Input Stok Produk',
+          title: 'Input & Tambah Stok Produk (Gudang)',
           description:
-              'Sebelum melayani pelanggan, pastikan stok fisik di toko atau gudang sudah terisi pada sistem. Stok ini divalidasi langsung oleh server saat checkout nota.',
-          actionLabel: 'Buka Menu Input Stok',
-          onAction: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const StockInputPage()),
-          ),
+              'Sebelum armada sales berangkat atau kasir melayani toko, pastikan stok fisik di gudang tercatat di sistem:\n\n'
+              '• Set Stok Awal: Menetapkan jumlah stok dasar fisik dari awal (mereset baseline).\n'
+              '• Tambah Stok Masuk: Jika ada pasokan baru, gunakan form ini. Jumlah baru akan DITAMBAHKAN ke sisa stok tanpa mengurangi jumlah barang yang sudah terjual sebelumnya.\n\n'
+              'Catatan untuk Sales: Akun Sales tidak perlu menginput stok. Stok yang di-input Admin menjadi kuota bersama yang divalidasi server saat checkout.',
+          actionLabel: isAdmin ? 'Buka Menu Input Stok' : null,
+          onAction: isAdmin
+              ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const StockInputPage()),
+                  )
+              : null,
           tips:
-              'Tips: Gunakan tombol petir (⚡) di halaman stok untuk mengisi 100 stok awal ke seluruh produk dalam 1 klik.',
+              'Admin dapat menggunakan tombol petir (⚡) untuk mengisi 100 stok awal ke semua produk dalam 1 klik.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
-        // STEP 2
+        // STEP 2: BUAT NOTA
         _stepCard(
           stepNumber: 2,
+          tagText: 'SEMUA PERAN',
+          tagColor: AppColors.primary,
           icon: Icons.add_circle_outline,
           color: const Color(0xFF12B886),
           bgColor: const Color(0xFFE6FCF5),
           title: 'Buat Nota Penjualan Baru',
           description:
-              'Tekan tombol (+) di tengah dock bawah atau tombol "Buat Nota Baru" di Beranda.\n\n'
-              '• Masukkan Nama Pelanggan & Alamat pengiriman.\n'
+              'Tekan tombol (+) di tengah dock bawah atau tombol "Buat Nota Baru" di Beranda:\n\n'
+              '• Masukkan Nama Pelanggan / Toko & Alamat pengiriman.\n'
               '• Pilih barang dari 13 produk Master Stock Boneva.\n'
-              '• Isi kuantitas pembelian dan bonus (jika ada promo).\n'
-              '• Tentukan Status Pembayaran: LUNAS (uang diterima) atau BON (piutang/tempo).',
+              '• Tentukan kuantitas pembelian & bonus promo.\n'
+              '• Validasi Stok Otomatis: Jika stok barang 0, sistem TIDAK BISA membuat nota.\n'
+              '• Pilih Status Pembayaran: LUNAS (uang kas diterima) atau BON (piutang/tempo).',
           actionLabel: 'Coba Input Nota Baru',
           onAction: () => Navigator.push(
             context,
@@ -204,38 +801,71 @@ class _GuidePageState extends State<GuidePage>
             ),
           ),
           tips:
-              'ID Transaksi dibuat otomatis secara berurutan dan unik berdasarkan tanggal (misal: Trx-20261024-0001).',
+              'Nomor nota otomatis berurutan (contoh: Trx-20261027-0001). Nota BON otomatis diberi label merah "NOTA BON" di cetakan struk.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
-        // STEP 3
+        // STEP 3: CETAK STRUK & PDF
         _stepCard(
           stepNumber: 3,
+          tagText: 'SEMUA PERAN',
+          tagColor: AppColors.primary,
           icon: Icons.print_outlined,
           color: const Color(0xFF7950F2),
           bgColor: const Color(0xFFF3F0FF),
-          title: 'Cetak Struk & Kirim Invoice PDF',
+          title: 'Cetak Struk Kasir & Kirim Invoice PDF',
           description:
-              'Setelah nota berhasil disimpan, aplikasi langsung menampilkan pop-up konfirmasi dengan opsi:\n\n'
-              '• Cetak Struk: Hubungkan printer termal Bluetooth 58mm untuk mencetak struk fisik kasir.\n'
-              '• Kirim PDF: Buat berkas nota berstempel resmi "Kencana Cahaya Amanah" dan bagikan langsung ke WhatsApp pelanggan.',
+              'Setelah nota berhasil disimpan, aplikasi langsung menampilkan pop-up konfirmasi:\n\n'
+              '• Cetak Struk: Hubungkan printer termal Bluetooth 58mm untuk mencetak struk fisik kasir seketika.\n'
+              '• Kirim PDF Berstempel: Buat berkas faktur resmi lengkap dengan logo KCA dan stempel basah legalitas, lalu bagikan langsung ke WhatsApp pelanggan.\n'
+              '• Identitas Nota: Pada struk dan PDF tertulis jelas apakah statusnya "NOTA LUNAS" atau "NOTA BON".',
           actionLabel: null,
           tips:
-              'Koneksikan printer Bluetooth Anda di Tab Lainnya > Pengaturan Printer terlebih dahulu.',
+              'Hubungkan printer Bluetooth Anda di menu Lainnya > Pengaturan Printer sebelum mulai bertransaksi.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
-        // STEP 4
+        // STEP 4: MONITORING & PELUNASAN BON
         _stepCard(
           stepNumber: 4,
+          tagText: 'MENU BARU',
+          tagColor: const Color(0xFFE03131),
+          icon: Icons.payment_outlined,
+          color: const Color(0xFFE03131),
+          bgColor: const Color(0xFFFFF5F5),
+          title: 'Monitoring & Pelunasan Bon Piutang',
+          description:
+              'Kelola penagihan nota piutang yang belum terbayar di menu "Pelunasan":\n\n'
+              '1. Buka menu Pelunasan (tersedia di Beranda atau Tab Lainnya).\n'
+              '2. Cari nama toko atau nomor nota bon yang ingin dilunasi.\n'
+              '3. Tekan tombol "Pelunasan" berwarna hijau pada kartu transaksi.\n'
+              '4. Pilih Tanggal Pelunasan sesuai saat uang kas diterima.\n'
+              '5. Tekan "Simpan Pelunasan" -> Aplikasi langsung otomatis mencetak struk bukti pelunasan dengan keterangan Tanggal Pelunasan!',
+          actionLabel: 'Buka Monitoring Pelunasan',
+          onAction: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const PelunasanPage()),
+          ),
+          tips:
+              'Riwayat pelunasan tersinkronisasi ganda ke database server dan memori lokal HP sehingga aman dari kehilangan data.',
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+
+        // STEP 5: LAPORAN & OMZET
+        _stepCard(
+          stepNumber: 5,
+          tagText: 'SEMUA PERAN',
+          tagColor: AppColors.primary,
           icon: Icons.bar_chart_outlined,
           color: const Color(0xFFF59F00),
           bgColor: const Color(0xFFFFF4E0),
-          title: 'Pantau Transaksi & Laporan Harian',
+          title: 'Pantau Omzet & Laporan Penjualan',
           description:
-              'Masuk ke tab "Transaksi" atau "Laporan" untuk meninjau rekapan:\n\n'
-              '• Tab Transaksi: Cari nota, filter hari ini, minggu ini, atau nota berstatus BON.\n'
-              '• Tab Laporan: Lihat total omzet per hari, kalender tanggal, serta cetak rekap shift harian.',
+              'Tinjau performa keuangan harian di Tab Laporan:\n\n'
+              '• Pemisahan Omzet Kasir: Laporan menampilkan Total Omzet, Omzet Lunas (Uang Kas Masuk), dan Omzet Belum Lunas (Bon Piutang).\n'
+              '• Rekap Per Sales (Khusus Admin): Filter omzet dan unit terjual berdasarkan masing-masing sales armada.\n'
+              '• Rekap Per Unit: Lihat berapa banyak dus/botol Boneva yang terjual per varian.\n'
+              '• Cetak Rekap Shift: Cetak ringkasan kasir harian ke printer termal.',
           actionLabel: 'Buka Laporan Harian',
           onAction: () => Navigator.push(
             context,
@@ -245,28 +875,31 @@ class _GuidePageState extends State<GuidePage>
             ),
           ),
           tips:
-              'Klik pada kartu nota untuk melihat rincian item, mengedit status pembayaran, atau menghapus nota.',
+              'Sales dapat melihat omzet dan total barang terjual miliknya sendiri untuk memantau target harian.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
-        // STEP 5
+        // STEP 6: ARSIP & CADANGAN CLOUD
         _stepCard(
-          stepNumber: 5,
-          icon: Icons.archive_outlined,
-          color: const Color(0xFFE03131),
-          bgColor: const Color(0xFFFFF5F5),
-          title: 'Arsipkan Data ke File CSV/Excel',
+          stepNumber: 6,
+          tagText: 'FAILOVER AMAN',
+          tagColor: const Color(0xFF0C9488),
+          icon: Icons.cloud_sync_outlined,
+          color: const Color(0xFF0C9488),
+          bgColor: const Color(0xFFE6FCF5),
+          title: 'Cadangan Supabase, Offline Queue & Arsip CSV',
           description:
-              'Lakukan pencadangan berkala untuk pembukuan akuntansi:\n\n'
-              '• Export CSV: Buka Tab Transaksi > Ikon Arsip untuk menyimpan seluruh data penjualan ke berkas CSV lokal.\n'
-              '• Import Transaksi: Tab Lainnya > Import Transaksi Lama untuk membuka berkas Excel (.xlsx) atau CSV lama.',
+              'Aplikasi memiliki proteksi multi-lapis agar data penjualan tidak pernah hilang:\n\n'
+              '• Dual-Server Failover: Jika server utama Laravel mengalami kendala, data transaksi otomatis masuk ke database cadangan Supabase Cloud.\n'
+              '• Offline Queue: Jika bertransaksi di blank spot tanpa internet, nota tersimpan di HP dan otomatis sinkron saat ada koneksi.\n'
+              '• Arsip Lokal CSV: Unduh berkas CSV rekapan transaksi di Tab Transaksi > Ikon Arsip untuk pembukuan Excel.',
           actionLabel: 'Buka Arsip Lokal',
           onAction: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const ArchivePage()),
           ),
           tips:
-              'Berkas CSV tersimpan aman di direktori aplikasi smartphone Anda dan dapat dibagikan kapan saja.',
+              'Status koneksi server utama dan database cadangan dapat dipantau langsung di bagian atas Beranda.',
         ),
         const SizedBox(height: 80),
       ],
@@ -275,6 +908,8 @@ class _GuidePageState extends State<GuidePage>
 
   Widget _stepCard({
     required int stepNumber,
+    required String tagText,
+    required Color tagColor,
     required IconData icon,
     required Color color,
     required Color bgColor,
@@ -317,13 +952,39 @@ class _GuidePageState extends State<GuidePage>
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: tagColor.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            tagText,
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              color: tagColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Container(
@@ -407,14 +1068,14 @@ class _GuidePageState extends State<GuidePage>
   }
 
   // ==========================================
-  // TAB 2: TIPS & TANYA JAWAB (FAQ)
+  // TAB 3: TIPS & TANYA JAWAB (FAQ)
   // ==========================================
   Widget _buildFaqTab() {
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.screenMargin),
       children: [
         const Text(
-          'Pertanyaan Umum & Tips Kasir',
+          'Pertanyaan Umum & Solusi Kendala',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w800,
@@ -423,7 +1084,7 @@ class _GuidePageState extends State<GuidePage>
         ),
         const SizedBox(height: 4),
         const Text(
-          'Jawaban praktis seputar penggunaan dan kendala teknis:',
+          'Jawaban praktis seputar wewenang peran, stok, nota, dan pelunasan:',
           style: TextStyle(
             fontSize: 13,
             color: AppColors.textSecondary,
@@ -432,53 +1093,84 @@ class _GuidePageState extends State<GuidePage>
         const SizedBox(height: AppSpacing.lg),
 
         _faqAccordion(
-          question: 'Bagaimana cara mengubah status BON menjadi LUNAS?',
+          question: 'Apa perbedaan mendasar akun Admin dan Sales?',
           answer:
-              '1. Buka Tab Transaksi (ikon struk).\n'
-              '2. Gunakan filter cepat "BON" untuk menampilkan semua pelanggan yang belum membayar.\n'
-              '3. Ketuk kartu transaksi yang ingin dilunasi.\n'
-              '4. Di halaman Detail Nota, tekan tombol ikon Pensil (Edit Nota) di pojok kanan atas.\n'
-              '5. Ubah opsi status pembayaran dari BON menjadi LUNAS, lalu simpan.',
+              '• Admin: Bertindak sebagai manajemen & logistik gudang. Menginput stok awal, menambah pasokan stok, memantau omzet seluruh sales armada, dan melihat pembagian omzet lunas vs bon secara terpisah.\n\n'
+              '• Sales: Bertindak sebagai pelaksana penjualan lapangan. Membuat nota penjualan toko, menagih bon di lapangan, serta mencetak struk fisik. Sales tidak dapat melihat angka nominal stok gudang demi keamanan privasi perusahaan, namun tetap bisa melihat omzet dan unit yang telah ia jual.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
         _faqAccordion(
-          question: 'Apa yang harus dilakukan jika muncul "Stock tidak mencukupi"?',
+          question:
+              'Mengapa akun Sales tidak bisa melihat angka nominal stok gudang?',
           answer:
-              'Server memvalidasi ketersediaan stok produk Boneva secara otomatis sebelum nota disimpan.\n\n'
-              'Solusi: Masuk ke halaman "Input Stok" (tersedia di Beranda atau Tab Lainnya), pilih produk yang bersangkutan, lalu tambahkan jumlah stok barang fisik yang ada.',
+              'Hal ini merupakan aturan bisnis (*business rule*) untuk menjaga kerahasiaan inventaris gudang pusat. Sales hanya diberikan indikator status ketersediaan:\n\n'
+              '• "Stok Tersedia" (warna hijau): Barang siap dipesan.\n'
+              '• "Stok Habis (0)" (warna merah): Barang tidak dapat dicheckout.\n\n'
+              'Dengan demikian, sales tetap memiliki kepastian barang ada atau tidak tanpa mengetahui total isi gudang perusahaan.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
         _faqAccordion(
-          question: 'Bagaimana jika server offline / tidak ada internet saat input nota?',
+          question:
+              'Apa yang terjadi jika stok barang 0 saat kasir ingin buat nota?',
           answer:
-              'Aplikasi Sales Kencana v2 memiliki fitur Local Backup & Offline Queue mandiri:\n\n'
-              '1. Transaksi Tetap Berjalan: Jika server mati atau tidak ada sinyal internet, transaksi TIDAK AKAN DIBLOKIR. Nota akan otomatis disimpan ke memori internal HP kasir dengan tanda "OFFLINE".\n'
-              '2. Produk Tetap Muncul: Seluruh 13 produk Boneva sudah dicache di HP, sehingga Anda tetap bisa memilih barang dan menentukan harga.\n'
-              '3. Cetak Struk & PDF Tetap Berfungsi: Struk termal Bluetooth dan PDF faktur dapat langsung dicetak atau dibagikan ke pelanggan saat itu juga.\n'
-              '4. Sinkronisasi Otomatis saat Online: Saat server kembali menyala atau ada koneksi, akan muncul banner "Nota Tersimpan di HP" di Beranda dan Tab Transaksi. Cukup ketuk "Hubungkan / Sinkronkan", seluruh transaksi offline akan langsung terkirim ke database server!',
+              'Sistem secara ketat MEMBLOKIR checkout nota apabila stok produk bernilai 0. Tombol simpan akan menolak transaksi dan menampilkan pesan peringatan.\n\n'
+              'Solusi: Hubungi Admin untuk menginput tambahan stok masuk fisik di menu Manajemen Stok.',
         ),
         const SizedBox(height: AppSpacing.cardGap),
 
         _faqAccordion(
-          question: 'Cara menghubungkan Printer Termal Bluetooth:',
+          question:
+              'Bagaimana cara Admin menambah stok baru tanpa mengurangi barang yang sudah laku?',
           answer:
-              '1. Pastikan Bluetooth di smartphone Anda aktif dan Printer Termal dalam keadaan menyala (ON).\n'
+              'Aplikasi menyediakan 2 formulir berbeda di menu Manajemen Stok:\n\n'
+              '1. Form "Tambah Stok Masuk" (Disarankan untuk barang datang): Jumlah yang diinput akan langsung DITAMBAHKAN ke sisa stok yang ada saat ini. Data penjualan lalu sama sekali tidak terganggu.\n\n'
+              '2. Form "Setel Stok Awal": Digunakan hanya saat pertama kali instalasi atau stock opname fisik ulang untuk menetapkan angka dasar awal produk.',
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+
+        _faqAccordion(
+          question: 'Bagaimana alur melunasi transaksi BON sekarang?',
+          answer:
+              'Pelunasan bon kini memiliki menu khusus "Pelunasan" (bisa diakses di Beranda atau Tab Lainnya):\n\n'
+              '1. Buka menu Pelunasan untuk melihat daftar transaksi bon yang belum terbayar.\n'
+              '2. Cari nama toko pelanggan yang sedang ditagih.\n'
+              '3. Tekan tombol hijau "Pelunasan".\n'
+              '4. Pilih tanggal pembayaran saat uang diterima.\n'
+              '5. Tekan "Simpan Pelunasan" -> Sistem langsung mengupdate status menjadi LUNAS, mencatat tanggal pelunasan, dan otomatis mencetak struk tanda lunas ke printer Bluetooth!',
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+
+        _faqAccordion(
+          question:
+              'Apakah struk fisik dan invoice PDF membedakan NOTA BON dan NOTA LUNAS?',
+          answer:
+              'Ya! Pada struk kasir termal 58mm maupun faktur PDF resmi:\n\n'
+              '• Jika belum lunas, tertera tulisan tegas: "NOTA BON".\n'
+              '• Jika sudah lunas, tertera tulisan: "NOTA LUNAS".\n'
+              '• Jika nota tersebut berasal dari pelunasan bon, struk akan mencantumkan baris khusus "Tgl Pelunasan: [Tanggal Bayar]" sebagai bukti sah.',
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+
+        _faqAccordion(
+          question:
+              'Bagaimana jika server utama mati atau tidak ada sinyal internet?',
+          answer:
+              'Aplikasi Sales Kencana v3 memiliki proteksi ganda:\n\n'
+              '1. Failover Supabase: Saat server Laravel bermasalah, aplikasi otomatis mengirim data ke Supabase Cloud PostgreSQL.\n'
+              '2. Offline Queue: Jika tidak ada internet sama sekali, nota disimpan di memori HP dan struk Bluetooth tetap bisa dicetak langsung di toko. Begitu HP mendapat koneksi internet, data otomatis terkirim ke server!',
+        ),
+        const SizedBox(height: AppSpacing.cardGap),
+
+        _faqAccordion(
+          question: 'Bagaimana cara menghubungkan printer termal Bluetooth?',
+          answer:
+              '1. Pastikan Bluetooth di smartphone menyala dan printer termal dalam kondisi ON.\n'
               '2. Buka Tab Lainnya > pilih Pengaturan Printer.\n'
               '3. Tekan "Cari Perangkat Bluetooth" (Scan).\n'
-              '4. Pilih nama printer (misal: RPP02N, Thermal_Printer, MPT-II, dst.) lalu pilih Connect.\n'
-              '5. Setelah terhubung, struk dapat langsung dicetak dari dialog simpan atau detail nota.',
-        ),
-        const SizedBox(height: AppSpacing.cardGap),
-
-        _faqAccordion(
-          question: 'Cara mengirim Invoice PDF resmi ke WhatsApp konsumen:',
-          answer:
-              '1. Setelah menyimpan nota, tekan tombol "Kirim PDF" pada dialog berhasil.\n'
-              '2. Atau buka transaksi dari daftar nota > tekan tombol "Kirim PDF Berstempel".\n'
-              '3. Aplikasi akan merender PDF ukuran A4/A5 resmi lengkap dengan logo Kencana, rincian barang, dan cap stempel legalitas.\n'
-              '4. Pilih aplikasi WhatsApp dan kirim ke kontak konsumen.',
+              '4. Pilih nama printer Anda (contoh: RPP02N, Thermal_Printer, MPT-II, dll.) lalu tekan Connect.\n'
+              '5. Setelah status "Terhubung", printer siap mencetak struk nota dan bukti pelunasan.',
         ),
         const SizedBox(height: 80),
       ],
@@ -572,53 +1264,79 @@ class _AppTourModalState extends State<_AppTourModal> {
     {
       'title': 'Selamat Datang di Sales Kencana',
       'subtitle':
-          'Aplikasi kasir & distribusi resmi Kencana Cahaya Amanah. Dirancang modern, cepat, dan mudah digunakan.',
+          'Sistem Kasir & Distribusi Boneva resmi UD. Kencana Cahaya Amanah dengan peran Admin & Sales terintegrasi.',
       'icon': Icons.storefront,
       'color': const Color(0xFF3B5BDB),
       'bgColor': const Color(0xFFEDF2FF),
       'points': [
-        'Sinkronisasi Master Stock Boneva aktif',
-        'Pencatatan nota LUNAS & BON terpadu',
-        'Cetak struk bluetooth & Invoice PDF stempel',
+        'Dua peran terpadu: Manajemen Admin & Sales Lapangan',
+        'Validasi kuota stok ketat (blokir jika 0)',
+        'Cetak struk Bluetooth 58mm & PDF faktur berstempel',
       ],
     },
     {
-      'title': 'Langkah 1: Input & Cek Stok',
+      'title': 'Peran Admin vs Sales Armada',
       'subtitle':
-          'Pastikan barang di gudang sudah tercatat agar validasi checkout berjalan lancar.',
+          'Pembagian wewenang yang aman untuk menjaga privasi stok dan kelancaran operasional.',
+      'icon': Icons.badge_outlined,
+      'color': const Color(0xFF7950F2),
+      'bgColor': const Color(0xFFF3F0FF),
+      'points': [
+        'Admin: Kelola stok gudang, pantau omzet tim & rekap',
+        'Sales: Buat nota, tagih bon toko & cetak struk',
+        'Privasi: Angka stok gudang terlindungi dari sales',
+      ],
+    },
+    {
+      'title': 'Langkah 1: Input & Tambah Stok',
+      'subtitle':
+          'Admin menginput stok awal dan pasokan stok baru tanpa memotong data barang terjual.',
       'icon': Icons.inventory_2_outlined,
       'color': const Color(0xFF12B886),
       'bgColor': const Color(0xFFE6FCF5),
       'points': [
-        'Buka menu "Input Stok" dari Beranda',
-        'Tambah stok masuk atau setel stok fisik',
-        'Gunakan fitur isi massal 100 stok cepat',
+        'Form "Tambah Stok Masuk" akumulatif ke stok sisa',
+        'Isi cepat 100 stok massal dengan tombol petir',
+        'Stok tersinkronisasi ke server utama & failover cloud',
       ],
     },
     {
-      'title': 'Langkah 2: Buat & Cetak Nota',
+      'title': 'Langkah 2: Buat Nota & Cetak',
       'subtitle':
-          'Proses kasir kilat dengan nomor nota otomatis dan pemilihan produk mudah.',
+          'Kasir kilat dengan status NOTA LUNAS atau NOTA BON serta nomor nota otomatis.',
       'icon': Icons.receipt_long,
-      'color': const Color(0xFF7950F2),
-      'bgColor': const Color(0xFFF3F0FF),
-      'points': [
-        'Tekan tombol (+) untuk nota baru',
-        'Pilih barang & tentukan status LUNAS/BON',
-        'Cetak langsung ke printer termal atau kirim PDF',
-      ],
-    },
-    {
-      'title': 'Langkah 3: Laporan & Arsip',
-      'subtitle':
-          'Pantau omzet harian dan amankan riwayat penjualan ke format CSV / Excel.',
-      'icon': Icons.insights,
       'color': const Color(0xFFF59F00),
       'bgColor': const Color(0xFFFFF4E0),
       'points': [
-        'Cek total omzet harian di Beranda & Tab Laporan',
-        'Kelola piutang BON pelanggan dengan mudah',
-        'Export data penjualan ke berkas CSV kapan saja',
+        'Pilih 13 varian produk Boneva & bonus promo',
+        'Otomatis tertera label "NOTA BON" atau "NOTA LUNAS"',
+        'Cetak langsung ke printer kasir atau kirim PDF WhatsApp',
+      ],
+    },
+    {
+      'title': 'Langkah 3: Menu Pelunasan Bon',
+      'subtitle':
+          'Monitoring piutang pelanggan dan pelunasan seketika dengan cetak bukti struk otomatis.',
+      'icon': Icons.payment_outlined,
+      'color': const Color(0xFFE03131),
+      'bgColor': const Color(0xFFFFF5F5),
+      'points': [
+        'Daftar nota piutang bon siap ditagih di lapangan',
+        'Tentukan tanggal uang kas diterima',
+        'Otomatis langsung cetak struk tanda lunas di printer',
+      ],
+    },
+    {
+      'title': 'Langkah 4: Laporan & Failover Cloud',
+      'subtitle':
+          'Rekap omzet terpisah (Lunas vs Bon) serta ketahanan data dengan Supabase & Offline Queue.',
+      'icon': Icons.insights,
+      'color': const Color(0xFF0C9488),
+      'bgColor': const Color(0xFFE6FCF5),
+      'points': [
+        'Admin melihat pemisahan omzet kas vs piutang bon',
+        'Sales memantau omzet & jumlah unit terjual pribadi',
+        'Transaksi offline otomatis tersinkron begitu online',
       ],
     },
   ];
@@ -636,7 +1354,7 @@ class _AppTourModalState extends State<_AppTourModal> {
       insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       child: Container(
         padding: const EdgeInsets.all(24),
-        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 540),
+        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 560),
         child: Column(
           children: [
             // Slide Content
@@ -663,26 +1381,26 @@ class _AppTourModalState extends State<_AppTourModal> {
                           color: s['color'],
                         ),
                       ),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: 16),
                       Text(
                         s['title'],
                         textAlign: TextAlign.center,
                         style: const TextStyle(
-                          fontSize: 18,
+                          fontSize: 17,
                           fontWeight: FontWeight.w800,
                           color: AppColors.textPrimary,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
                       Text(
                         s['subtitle'],
                         textAlign: TextAlign.center,
                         style: const TextStyle(
-                          fontSize: 13,
+                          fontSize: 12,
                           color: AppColors.textSecondary,
                         ),
                       ),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: 16),
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
@@ -729,7 +1447,7 @@ class _AppTourModalState extends State<_AppTourModal> {
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
 
             // Indicator Dots
             Row(
@@ -751,7 +1469,7 @@ class _AppTourModalState extends State<_AppTourModal> {
               ),
             ),
 
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
 
             // Navigation Buttons
             Row(

@@ -2,16 +2,19 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/arsip.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
 import 'package:kasir_kutacane/pages/login_page.dart';
+import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/uploaddatatransaksi.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/daily_closing_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/printerBluetooth.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 
 class MorePage extends StatefulWidget {
@@ -68,16 +71,35 @@ class _MorePageState extends State<MorePage> {
             const SizedBox(height: AppSpacing.xxl),
           ],
 
+          // Section: Piutang & Pembayaran
+          _sectionHeader('Piutang & Pembayaran'),
+          const SizedBox(height: AppSpacing.sm),
+          _menuCard(
+            context,
+            icon: Icons.receipt_long_rounded,
+            title: 'Monitoring & Pelunasan Bon',
+            subtitle: 'Daftar transaksi bon & pelunasan dengan tanggal',
+            badgeText: 'Piutang',
+            badgeColor: AppColors.bon,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const PelunasanPage()),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xxl),
+
           // Section: Inventori & Stok
           _sectionHeader('Inventori & Stok Produk'),
           const SizedBox(height: AppSpacing.sm),
           _menuCard(
             context,
             icon: Icons.inventory_2_outlined,
-            title: 'Input & Kelola Stok',
-            subtitle: AuthService.currentUser?.canManageStock == true
+            title: AuthService.currentUser?.isAdmin == true
+                ? 'Input & Kelola Stok'
+                : 'Stok Terjual & Produk',
+            subtitle: AuthService.currentUser?.isAdmin == true
                 ? 'Update kuota stok awal & monitor fisik produk'
-                : 'Lihat kuota & ketersediaan stok armada Anda (Read-Only)',
+                : 'Lihat akumulasi penjualan & katalog produk (Stok Awal Terisolasi)',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const StockInputPage()),
@@ -158,8 +180,8 @@ class _MorePageState extends State<MorePage> {
           _menuCard(
             context,
             icon: Icons.menu_book_outlined,
-            title: 'Panduan & Alur Kasir',
-            subtitle: 'Langkah operasional, alur transaksi & tips teknis',
+            title: 'Panduan & Peran Kasir',
+            subtitle: 'Wewenang Admin & Sales, alur nota, pelunasan & tips',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const GuidePage()),
@@ -170,7 +192,7 @@ class _MorePageState extends State<MorePage> {
             context,
             icon: Icons.info_outline,
             title: 'Tentang Aplikasi',
-            subtitle: 'Sales Kencana v2 — Kencana Cahaya Amanah',
+            subtitle: 'Sales Kencana v3 — Kencana Cahaya Amanah',
             onTap: () => _showAboutDialog(context),
           ),
 
@@ -1085,9 +1107,43 @@ class _MorePageState extends State<MorePage> {
             const SizedBox(height: AppSpacing.xl),
             SizedBox(
               width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => Printbluetooth(
+                        orderItems: const [],
+                        paymentMethod: 'Tunai',
+                        total: 0,
+                        date: DateTime.now(),
+                        customerName: 'Uji Coba Printer',
+                        alamat: 'Gorontalo',
+                        idTransaksi: 'TEST-001',
+                        status: 'LUNAS',
+                      ),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                icon: const Icon(Icons.bluetooth_searching, size: 20),
+                label: const Text(
+                  'Buka Koneksi & Tes Printer',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
               child: OutlinedButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Mengerti'),
+                child: const Text('Tutup'),
               ),
             ),
             const SizedBox(height: AppSpacing.sm),
@@ -1113,7 +1169,7 @@ class _MorePageState extends State<MorePage> {
       try {
         final authHeaders = await AuthService.getAuthHeaders();
         final res = await http.get(
-          Uri.parse('https://laravel.fathurrzqn8n.web.id/api/transaksi'),
+          ApiConfig.transaksiUri,
           headers: authHeaders,
         ).timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
@@ -1409,7 +1465,7 @@ class _MorePageState extends State<MorePage> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Sales Kencana v2'),
+        title: const Text('Sales Kencana v3'),
         content: const Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1419,7 +1475,7 @@ class _MorePageState extends State<MorePage> {
             Text(
               'Kencana Cahaya Amanah\n'
               'JL. Kenangan No. 183 Gorontalo\n\n'
-              'Versi 2.0.0',
+              'Versi 3.0.0',
               style: TextStyle(
                 fontSize: 14,
                 color: AppColors.textSecondary,

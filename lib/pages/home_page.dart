@@ -2,14 +2,19 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
+import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
+import 'package:kasir_kutacane/services/printerBluetooth.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
+import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 
@@ -29,11 +34,19 @@ class HomePageState extends State<HomePage> {
   String? _errorMessage;
   int _pendingOfflineCount = 0;
   bool _isSyncing = false;
+  int _allActiveBonCount = 0;
 
   @override
   void initState() {
     super.initState();
+    SupabaseSyncService.startMonitoring();
     fetchTodayTransactions();
+  }
+
+  @override
+  void dispose() {
+    SupabaseSyncService.stopMonitoring();
+    super.dispose();
   }
 
   Future<void> fetchTodayTransactions() async {
@@ -64,7 +77,7 @@ class HomePageState extends State<HomePage> {
     try {
       final authHeaders = await AuthService.getAuthHeaders();
       final response = await http.get(
-        Uri.parse('https://laravel.fathurrzqn8n.web.id/api/transaksi'),
+        ApiConfig.transaksiUri,
         headers: authHeaders,
       ).timeout(const Duration(seconds: 6));
 
@@ -76,8 +89,24 @@ class HomePageState extends State<HomePage> {
             )
             .toList();
 
+        // Sinkronkan status pelunasan dengan PelunasanHistoryService
+        final historyMap = await PelunasanHistoryService.loadHistory();
+        for (final t in allServerTransactions) {
+          if (historyMap.containsKey(t.id_transaksi)) {
+            final rec = historyMap[t.id_transaksi]!;
+            t.status = 'LUNAS';
+            t.tanggalPelunasan = rec.tanggalPelunasan;
+          } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
+            t.tanggalPelunasan = t.date;
+          }
+        }
+
+        final activeBonTotal = allServerTransactions
+            .where((t) => t.status.toUpperCase() == 'BON')
+            .length;
+
         final serverToday = allServerTransactions.where((trx) {
-          return DateFormat('yyyy-MM-dd').format(trx.date) == todayStr;
+          return DateFormat('yyyy-MM-dd').format(trx.date.toLocal()) == todayStr;
         }).toList();
 
         // Gabungkan transaksi server dan transaksi offline lokal yang belum tersinkron
@@ -93,6 +122,7 @@ class HomePageState extends State<HomePage> {
         if (!mounted) return;
         setState(() {
           _todayTransactions = merged;
+          _allActiveBonCount = activeBonTotal;
           _loading = false;
         });
 
@@ -216,10 +246,31 @@ class HomePageState extends State<HomePage> {
             icon: const Icon(Icons.more_vert),
             tooltip: 'Menu Cepat',
             onSelected: (val) {
-              if (val == 'stock') {
+              if (val == 'pelunasan') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                ).then((_) => fetchTodayTransactions());
+              } else if (val == 'stock') {
                 Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const StockInputPage()),
+                ).then((_) => fetchTodayTransactions());
+              } else if (val == 'printer') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => Printbluetooth(
+                      orderItems: const [],
+                      paymentMethod: 'Tunai',
+                      total: 0,
+                      date: DateTime.now(),
+                      customerName: 'Uji Coba Printer',
+                      alamat: 'Gorontalo',
+                      idTransaksi: 'TEST-001',
+                      status: 'LUNAS',
+                    ),
+                  ),
                 );
               } else if (val == 'guide') {
                 Navigator.push(
@@ -230,13 +281,37 @@ class HomePageState extends State<HomePage> {
             },
             itemBuilder: (ctx) => [
               const PopupMenuItem(
+                value: 'pelunasan',
+                child: Row(
+                  children: [
+                    Icon(Icons.receipt_long_rounded,
+                        size: 20, color: AppColors.bon),
+                    SizedBox(width: 10),
+                    Text('Pelunasan Bon'),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
                 value: 'stock',
                 child: Row(
                   children: [
-                    Icon(Icons.inventory_2_outlined,
+                    const Icon(Icons.inventory_2_outlined,
                         size: 20, color: AppColors.primary),
+                    const SizedBox(width: 10),
+                    Text(AuthService.currentUser?.isAdmin == true
+                        ? 'Manajemen Stok'
+                        : 'Stok Terjual & Produk'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'printer',
+                child: Row(
+                  children: [
+                    Icon(Icons.print_outlined,
+                        size: 20, color: Color(0xFF16A34A)),
                     SizedBox(width: 10),
-                    Text('Manajemen Stok'),
+                    Text('Printer Bluetooth'),
                   ],
                 ),
               ),
@@ -383,6 +458,10 @@ class HomePageState extends State<HomePage> {
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.screenMargin),
       children: [
+        // Status Koneksi Database & Backup Supabase
+        _buildDatabaseStatusBar(),
+        const SizedBox(height: AppSpacing.xs),
+
         // Kartu Profil & Status Pengguna (Rapi & Tidak Tertimpa)
         _buildUserHeaderCard(),
 
@@ -395,8 +474,17 @@ class HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: AppSpacing.md),
 
-        // Status Kuota Komoditas Fisik
-        _buildCommodityGlance(),
+        // Banner Monitoring Bon jika ada transaksi BON belum lunas
+        if (_jumlahBon > 0 || _allActiveBonCount > 0) ...[
+          _buildBonAlertCard(),
+          const SizedBox(height: AppSpacing.md),
+        ],
+
+        // Status Kuota Komoditas Fisik (Admin) ATAU Performa Stok Terjual (Sales)
+        if (AuthService.currentUser?.isAdmin == true)
+          _buildCommodityGlance()
+        else
+          _buildSalesTerjualGlance(),
         const SizedBox(height: AppSpacing.md),
 
         // Banner Antrean Offline (Jika ada nota yang tersimpan di HP)
@@ -510,7 +598,7 @@ class HomePageState extends State<HomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Panduan & Alur Kerja Kasir',
+                        'Panduan, Peran & Alur Kasir',
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
@@ -518,7 +606,7 @@ class HomePageState extends State<HomePage> {
                         ),
                       ),
                       Text(
-                        'Pelajari 5 langkah operasional: stok, nota, cetak, hingga laporan',
+                        'Panduan peran Admin/Sales, alur nota, stok, pelunasan & laporan',
                         style: TextStyle(
                           fontSize: 11,
                           color: AppColors.textSecondary,
@@ -538,7 +626,7 @@ class HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: AppSpacing.lg),
 
-        // Tombol Aksi: Buat Nota Baru & Input Stok
+        // Tombol Aksi: Buat Nota Baru & Input Stok / Pelunasan
         Row(
           children: [
             Expanded(
@@ -556,12 +644,30 @@ class HomePageState extends State<HomePage> {
             Expanded(
               flex: 2,
               child: OutlinedButton.icon(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const StockInputPage()),
+                onPressed: () {
+                  if (AuthService.currentUser?.isAdmin == true) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const StockInputPage()),
+                    ).then((_) => fetchTodayTransactions());
+                  } else {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                    ).then((_) => fetchTodayTransactions());
+                  }
+                },
+                icon: Icon(
+                  AuthService.currentUser?.isAdmin == true
+                      ? Icons.inventory_2_outlined
+                      : Icons.receipt_long_rounded,
+                  size: 18,
                 ),
-                icon: const Icon(Icons.inventory_2_outlined, size: 18),
-                label: const Text('Input Stok'),
+                label: Text(
+                  AuthService.currentUser?.isAdmin == true
+                      ? 'Input Stok'
+                      : 'Pelunasan',
+                ),
                 style: OutlinedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
@@ -852,5 +958,351 @@ class HomePageState extends State<HomePage> {
       default:
         return Icons.inventory_2_outlined;
     }
+  }
+
+  Widget _buildDatabaseStatusBar() {
+    return ValueListenableBuilder<DatabaseConnectionStatus>(
+      valueListenable: SupabaseSyncService.connectionStatusNotifier,
+      builder: (context, status, _) {
+        Color bgColor;
+        Color borderColor;
+        Color textColor;
+        IconData icon;
+        String title;
+        String subtitle;
+
+        switch (status) {
+          case DatabaseConnectionStatus.primaryOnline:
+            bgColor = const Color(0xFFE8F5E9);
+            borderColor = const Color(0xFFA5D6A7);
+            textColor = const Color(0xFF2E7D32);
+            icon = Icons.cloud_done_rounded;
+            title = 'Database Utama Aktif (api-v2)';
+            subtitle = 'Koneksi aktif • Backup Supabase & lokal siaga';
+            break;
+          case DatabaseConnectionStatus.primaryOfflineSupabaseReady:
+            bgColor = const Color(0xFFFFF8E1);
+            borderColor = const Color(0xFFFFE082);
+            textColor = const Color(0xFFF57F17);
+            icon = Icons.cloud_sync_rounded;
+            title = 'Database Utama Offline • Supabase Siap';
+            subtitle = 'Failover aktif: Nota otomatis dialihkan ke Supabase';
+            break;
+          case DatabaseConnectionStatus.offlineLocal:
+            bgColor = const Color(0xFFFFEBEE);
+            borderColor = const Color(0xFFFFCDD2);
+            textColor = const Color(0xFFC62828);
+            icon = Icons.cloud_off_rounded;
+            title = 'Mode Offline (Penyimpanan HP)';
+            subtitle = 'Nota tersimpan di HP, siap disinkronkan saat online';
+            break;
+          case DatabaseConnectionStatus.checking:
+            bgColor = Colors.grey.shade100;
+            borderColor = Colors.grey.shade300;
+            textColor = AppColors.textSecondary;
+            icon = Icons.wifi_protected_setup_rounded;
+            title = 'Memeriksa Status Database...';
+            subtitle = 'Menghubungkan ke API v2 & Supabase';
+            break;
+        }
+
+        return InkWell(
+          onTap: () async {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Memeriksa ulang koneksi database...'),
+                duration: Duration(seconds: 1),
+              ),
+            );
+            await SupabaseSyncService.checkConnectionStatus();
+          },
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: borderColor),
+            ),
+            child: Row(
+              children: [
+                Icon(icon, size: 18, color: textColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: textColor,
+                        ),
+                      ),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: textColor.withOpacity(0.85),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.6),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'Cek',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: textColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBonAlertCard() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        color: AppColors.bonBg,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.bon.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(7),
+            decoration: BoxDecoration(
+              color: AppColors.bon.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.receipt_long_rounded,
+              color: AppColors.bon,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${_allActiveBonCount > 0 ? _allActiveBonCount : _jumlahBon} Transaksi Bon Belum Lunas',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.bon,
+                  ),
+                ),
+                const Text(
+                  'Catat tanggal pelunasan pelanggan di menu Pelunasan.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.bon,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const PelunasanPage()),
+            ).then((_) => fetchTodayTransactions()),
+            child: const Text('Buka →', style: TextStyle(fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSalesTerjualGlance() {
+    int galonTerjual = 0;
+    int btl600Terjual = 0;
+    int btl1500Terjual = 0;
+    int gelasTerjual = 0;
+
+    for (final trx in _todayTransactions) {
+      for (final item in trx.items) {
+        final code = (item.tyunit ?? '').toUpperCase();
+        final name = item.name.toUpperCase();
+        final qty = item.quantity + item.bonus;
+
+        if (code.contains('BV01') ||
+            code.contains('BV02') ||
+            code.contains('BV03') ||
+            code.contains('BV04') ||
+            code.contains('BV05') ||
+            name.contains('GALON')) {
+          galonTerjual += qty;
+        } else if (code.contains('BV06') ||
+            code.contains('BV07') ||
+            code.contains('BV08') ||
+            name.contains('600')) {
+          btl600Terjual += qty;
+        } else if (code.contains('BV09') ||
+            code.contains('BV10') ||
+            name.contains('1500') ||
+            name.contains('1.5')) {
+          btl1500Terjual += qty;
+        } else if (code.contains('BV11') ||
+            code.contains('BV12') ||
+            code.contains('BV13') ||
+            name.contains('GELAS')) {
+          gelasTerjual += qty;
+        }
+      }
+    }
+
+    final totalUnit = galonTerjual + btl600Terjual + btl1500Terjual + gelasTerjual;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.point_of_sale_outlined, size: 18, color: AppColors.primary),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Stok Terjual Saya ($totalUnit Unit)',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              InkWell(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const StockInputPage()),
+                ).then((_) => fetchTodayTransactions()),
+                child: const Text(
+                  'Lihat Detail >',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _miniSalesTerjualItem(
+                  'Galon',
+                  Icons.water_drop_outlined,
+                  const Color(0xFF0288D1),
+                  '$galonTerjual',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _miniSalesTerjualItem(
+                  'Btl 600',
+                  Icons.local_drink_outlined,
+                  const Color(0xFF00897B),
+                  '$btl600Terjual',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _miniSalesTerjualItem(
+                  'Btl 1.5L',
+                  Icons.wine_bar_outlined,
+                  const Color(0xFF5E35B1),
+                  '$btl1500Terjual',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _miniSalesTerjualItem(
+                  'Gelas',
+                  Icons.crop_square_outlined,
+                  const Color(0xFFE65100),
+                  '$gelasTerjual',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _miniSalesTerjualItem(
+    String title,
+    IconData icon,
+    Color color,
+    String count,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 10,
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w500,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            count,
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: color),
+          ),
+          const Text(
+            'terjual',
+            style: TextStyle(fontSize: 9, color: AppColors.textSecondary),
+          ),
+        ],
+      ),
+    );
   }
 }

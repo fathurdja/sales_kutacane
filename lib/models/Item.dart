@@ -45,10 +45,6 @@ class Item {
         : (int.tryParse(rawSisaKuota?.toString() ?? '0') ??
             (parsedKuota > 0 ? (parsedKuota - parsedTerjual).clamp(0, 999999) : 0));
 
-    final rawStock = json['stock'];
-    final int parsedStock = (rawStock is num)
-        ? rawStock.toInt()
-        : (int.tryParse(rawStock?.toString() ?? '0') ?? 0);
 
     final tyunit = json['TYUNIT']?.toString() ??
         json['tyunit']?.toString() ??
@@ -58,10 +54,15 @@ class Item {
     final name =
         json['NTYUNIT']?.toString() ?? json['name']?.toString() ?? json['nama_produk']?.toString() ?? '';
 
-    // Prioritaskan sisaKuota fisik jika ada, fallback ke parsedStock
-    final effectiveStock = (parsedSisaKuota > 0 || parsedKuota > 0)
-        ? parsedSisaKuota
-        : (parsedStock > 0 ? parsedStock : 0);
+    // Prioritaskan sisaKuota fisik jika ada. Jika kuota adalah 0 atau sisa 0, stok adalah 0.
+    final int effectiveStock;
+    if (parsedSisaKuota > 0) {
+      effectiveStock = parsedSisaKuota;
+    } else if (parsedKuota > 0) {
+      effectiveStock = (parsedKuota - parsedTerjual).clamp(0, 999999);
+    } else {
+      effectiveStock = 0;
+    }
 
     return Item(
       tyunit: tyunit,

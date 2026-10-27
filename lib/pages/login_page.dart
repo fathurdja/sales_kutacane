@@ -93,17 +93,10 @@ class _LoginPageState extends State<LoginPage> {
                   // Logo & Brand Header
                   Center(
                     child: Container(
-                      width: 76,
-                      height: 76,
+                      width: 84,
+                      height: 84,
                       decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            AppColors.primary,
-                            AppColors.primary.withValues(alpha: 0.8),
-                          ],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
+                        color: const Color(0xFF081E1C),
                         borderRadius: BorderRadius.circular(22),
                         boxShadow: [
                           BoxShadow(
@@ -113,16 +106,25 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.storefront_rounded,
-                        color: Colors.white,
-                        size: 40,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(22),
+                        child: Image.asset(
+                          'assets/images/app_icon_legacy.png',
+                          width: 84,
+                          height: 84,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.storefront_rounded,
+                            color: Colors.white,
+                            size: 44,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    'Sales Kencana v2',
+                    'Sales Kencana v3',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 24,

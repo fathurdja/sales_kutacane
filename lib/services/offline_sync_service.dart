@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -27,8 +28,7 @@ class SyncResult {
 class OfflineSyncService {
   static const String _queueFileName = 'offline_transactions_queue.json';
   static const String _productsCacheFileName = 'cached_master_products.json';
-  static const String _apiUrl =
-      'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+  static String get _apiUrl => '${ApiConfig.baseUrl}/transaksi';
 
   /// Mendapatkan file direktori dokumen lokal aplikasi
   static Future<File> _getLocalFile(String fileName) async {

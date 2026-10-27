@@ -1,20 +1,20 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 
 class StockApiService {
-  static const String baseUrl = 'https://laravel.fathurrzqn8n.web.id/api';
+  static String get baseUrl => ApiConfig.baseUrl;
 
   /// 1. Ambil Ringkasan Lengkap Kelompok Komoditas Fisik (Stok Awal, Terjual, Sisa, Rincian Varian)
-  /// - Jika dipanggil oleh User (Sales): Otomatis menampilkan kuota khusus armadanya.
-  /// - Jika Admin: Default menampilkan stok total, atau bisa memfilter dengan parameter [userId].
-  static Future<List<StockGroup>> fetchStockSummary({int? userId}) async {
-    final uri = userId != null
-        ? Uri.parse('$baseUrl/stock-summary?user_id=$userId')
-        : Uri.parse('$baseUrl/stock-summary');
-
+  /// Stok awal yang diinput oleh Admin berlaku sebagai kuota bersama (shared pool) untuk seluruh sales.
+  static Future<List<StockGroup>> fetchStockSummary() async {
+    final uri = Uri.parse('$baseUrl/stock-summary');
     final headers = await AuthService.getAuthHeaders();
     final response = await http
         .get(uri, headers: headers)
@@ -41,18 +41,16 @@ class StockApiService {
   }
 
   /// 2. Set Stok Awal (Kuota Masuk) untuk satu kelompok komoditas fisik
-  /// - [userId]: Khusus Admin yang ingin mengalokasikan stok ke sales tertentu (misal Sales 1 -> user_id: 2).
+  /// Kuota ini berlaku untuk seluruh pengguna kasir (global shared stock).
   /// - [resetTerjual]: Jika true, counter penjualan varian di kelompok ini akan direset ke 0.
   static Future<Map<String, dynamic>> setStockAwal({
     required String kelompok,
     required int stockAwal,
-    int? userId,
     bool resetTerjual = false,
   }) async {
     final payload = {
       'kelompok': kelompok.toUpperCase(),
       'stock_awal': stockAwal,
-      if (userId != null) 'user_id': userId,
       'reset_terjual': resetTerjual,
     };
 
@@ -78,14 +76,43 @@ class StockApiService {
     }
   }
 
+  /// 2B. Tambah Pasokan Stok Masuk (Restock Fisik di Tengah Hari)
+  /// Menambahkan [tambahanQty] langsung ke sisa stok fisik yang sedang berjalan tanpa mereset counter penjualan.
+  /// Formula Backend:
+  ///   stok_awal_baru = current_stok_awal + tambahanQty
+  ///   sisa_stok_baru = (current_stok_awal + tambahanQty) - total_terjual = current_sisa + tambahanQty
+  static Future<Map<String, dynamic>> addStockMasuk({
+    required String kelompok,
+    required int tambahanQty,
+    int? currentStockAwal,
+  }) async {
+    int baseStockAwal = currentStockAwal ?? 0;
+    try {
+      final groups = await fetchStockSummary();
+      final currentGroup = groups
+          .where((g) => g.kelompok.toUpperCase() == kelompok.toUpperCase())
+          .firstOrNull;
+      if (currentGroup != null) {
+        baseStockAwal = currentGroup.stockAwal;
+      }
+    } catch (_) {
+      // Fallback ke currentStockAwal jika terjadi kegagalan jaringan
+    }
+
+    final newStockAwal = baseStockAwal + tambahanQty;
+    return await setStockAwal(
+      kelompok: kelompok,
+      stockAwal: newStockAwal,
+      resetTerjual: false,
+    );
+  }
+
   /// 3. Ambil Rincian Barang Terjual Hari Ini (per varian)
   static Future<Map<String, dynamic>> fetchStockTerjual({
     String? kelompok,
-    int? userId,
   }) async {
     final queryParams = <String, String>{};
     if (kelompok != null && kelompok.isNotEmpty) queryParams['kelompok'] = kelompok;
-    if (userId != null) queryParams['user_id'] = userId.toString();
 
     final uri = Uri.parse('$baseUrl/stock-terjual').replace(queryParameters: queryParams.isEmpty ? null : queryParams);
     final headers = await AuthService.getAuthHeaders();
@@ -101,11 +128,9 @@ class StockApiService {
   /// 4. Reset Counter Terjual Kembali ke 0 (Khusus Admin)
   static Future<void> resetStockTerjual({
     String? kelompok,
-    int? userId,
   }) async {
     final payload = <String, dynamic>{
       if (kelompok != null && kelompok.isNotEmpty) 'kelompok': kelompok,
-      if (userId != null) 'user_id': userId,
     };
 
     final headers = await AuthService.getAuthHeaders();
@@ -127,18 +152,66 @@ class StockApiService {
     }
   }
 
-  /// 5. Ambil Daftar 13 Produk Boneva Lengkap dengan Info Kuota & Sisa
+  /// 5. Ambil Daftar 13 Produk Boneva Lengkap dengan Info Kuota & Sisa Fisik Nyata
   static Future<List<Item>> fetchProducts() async {
-    final headers = await AuthService.getAuthHeaders();
-    final response = await http
-        .get(Uri.parse('$baseUrl/products'), headers: headers)
-        .timeout(const Duration(seconds: 8));
+    try {
+      final headers = await AuthService.getAuthHeaders();
+      final response = await http
+          .get(Uri.parse('$baseUrl/products'), headers: headers)
+          .timeout(const Duration(seconds: 8));
 
-    if (response.statusCode == 200) {
-      final List<dynamic> list = jsonDecode(response.body);
-      return list.map((json) => Item.fromJson(json as Map<String, dynamic>)).toList();
-    } else {
-      throw Exception('Gagal memuat daftar produk (${response.statusCode})');
+      if (response.statusCode == 200) {
+        final List<dynamic> list = jsonDecode(response.body);
+        final products =
+            list.map((json) => Item.fromJson(json as Map<String, dynamic>)).toList();
+
+        List<Item> finalProducts = products;
+        // Sinkronkan secara ketat dengan kuota fisik dari /stock-summary
+        try {
+          final groups = await fetchStockSummary();
+          final Map<String, int> groupStockMap = {};
+          for (final g in groups) {
+            groupStockMap[g.kelompok.toUpperCase()] = g.sisaStock;
+          }
+
+          finalProducts = products.map((p) {
+            final gKey = p.kelompok.toUpperCase();
+            if (groupStockMap.containsKey(gKey)) {
+              final realGroupStock = groupStockMap[gKey]!;
+              return Item(
+                tyunit: p.tyunit,
+                name: p.name,
+                price: p.price,
+                stock: realGroupStock,
+                kelompok: p.kelompok,
+                kuota: p.kuota,
+                terjual: p.terjual,
+                sisaKuota: realGroupStock,
+              );
+            }
+            return p;
+          }).toList();
+        } catch (_) {}
+
+        // Sinkronkan master data & stock ke Supabase Backup secara non-blocking
+        unawaited(SupabaseSyncService.syncMasterProducts(finalProducts));
+
+        return finalProducts;
+      } else {
+        throw Exception('Server merespons kode ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Gagal fetch products dari database utama ($e), mencoba Supabase backup...');
+      try {
+        final backupProducts = await SupabaseSyncService.fetchProductsFromSupabase();
+        if (backupProducts.isNotEmpty) {
+          debugPrint('Berhasil memuat ${backupProducts.length} produk dari Supabase backup.');
+          return backupProducts;
+        }
+      } catch (errSupabase) {
+        debugPrint('Supabase fetch failed: $errSupabase');
+      }
+      rethrow;
     }
   }
 

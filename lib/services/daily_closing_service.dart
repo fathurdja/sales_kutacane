@@ -3,6 +3,7 @@ import 'package:csv/csv.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -223,7 +224,7 @@ class DailyClosingService {
         if (!trx.isOffline && id.isNotEmpty) {
           try {
             await http.delete(
-              Uri.parse('https://laravel.fathurrzqn8n.web.id/api/transaksi/$id'),
+              ApiConfig.transaksiDetailUri(id),
               headers: headers,
             ).timeout(const Duration(seconds: 8));
           } catch (e) {

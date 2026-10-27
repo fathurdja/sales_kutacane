@@ -134,7 +134,9 @@ class PdfInvoiceService {
                     ),
                   ),
                   child: pw.Text(
-                    transaction.status,
+                    transaction.status == 'LUNAS'
+                        ? 'NOTA LUNAS'
+                        : 'NOTA BON (BELUM LUNAS)',
                     style: pw.TextStyle(
                       fontSize: 12,
                       fontWeight: pw.FontWeight.bold,
@@ -158,13 +160,25 @@ class PdfInvoiceService {
                   child: pw.Column(
                     crossAxisAlignment: pw.CrossAxisAlignment.start,
                     children: [
-                      pw.Text('FAKTUR PENJUALAN', style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                      pw.Text(
+                        transaction.status == 'LUNAS'
+                            ? 'FAKTUR PENJUALAN - NOTA LUNAS'
+                            : 'FAKTUR PENJUALAN - NOTA BON',
+                        style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
+                      ),
                       pw.SizedBox(height: 4),
                       pw.Text('No. Nota: ${transaction.id_transaksi}', style: const pw.TextStyle(fontSize: 10)),
                       pw.Text(
                         'Tanggal : ${formatTanggalIndo(transaction.date)}',
                         style: const pw.TextStyle(fontSize: 10),
                       ),
+                      if (transaction.status == 'LUNAS' && transaction.tanggalPelunasan != null) ...[
+                        pw.SizedBox(height: 2),
+                        pw.Text(
+                          'Tgl Pelunasan: ${formatTanggalIndo(transaction.tanggalPelunasan!)}',
+                          style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green800),
+                        ),
+                      ],
                     ],
                   ),
                 ),

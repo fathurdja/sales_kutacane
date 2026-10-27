@@ -4,9 +4,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
+import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/services/printAll.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
@@ -15,6 +19,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class DailyReportDetailPage extends StatefulWidget {
   final DateTime selectedDate;
@@ -27,9 +32,11 @@ class DailyReportDetailPage extends StatefulWidget {
 
 class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   late DateTime _currentDate;
+  bool _isAllDates = false;
   bool _loading = true;
   List<Transaction> _allTransactions = [];
   List<Transaction> _filteredTransactions = [];
+  String _statusFilter = 'SEMUA'; // 'SEMUA', 'LUNAS', 'BON', 'ALL_BON'
 
   @override
   void initState() {
@@ -42,18 +49,82 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     setState(() => _loading = true);
     try {
       final headers = await AuthService.getAuthHeaders();
-      final url = Uri.parse("https://laravel.fathurrzqn8n.web.id/api/transaksi");
+      final url = ApiConfig.transaksiUri;
       final response = await http
           .get(url, headers: headers)
           .timeout(const Duration(seconds: 8));
 
+      List<Transaction> loaded = [];
+
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
-        final loaded = data
+        loaded = data
             .map<Transaction>(
               (json) => Transaction.fromJson(json as Map<String, dynamic>),
             )
             .toList();
+      } else {
+        throw Exception("Server error (${response.statusCode})");
+      }
+
+      // Sinkronkan status pelunasan dengan PelunasanHistoryService
+      final historyMap = await PelunasanHistoryService.loadHistory();
+      for (final t in loaded) {
+        if (historyMap.containsKey(t.id_transaksi)) {
+          final rec = historyMap[t.id_transaksi]!;
+          t.status = 'LUNAS';
+          t.tanggalPelunasan = rec.tanggalPelunasan;
+        } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
+          t.tanggalPelunasan = t.date;
+        }
+      }
+
+      // Gabungkan juga dengan transaksi offline lokal jika ada
+      final pending = await OfflineSyncService.getPendingTransactions();
+      for (final p in pending) {
+        if (!loaded.any((t) => t.id_transaksi == p.id_transaksi)) {
+          p.isOffline = true;
+          loaded.insert(0, p);
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _allTransactions = loaded;
+        _applyDateFilter();
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint("Gagal memuat transaksi utama ($e), mencoba cadangan Supabase/offline...");
+      try {
+        final supabase = Supabase.instance.client;
+        final res = await supabase
+            .from('transaksi')
+            .select('*')
+            .order('tanggal', ascending: false);
+
+        final loaded = (res as List)
+            .map((json) => Transaction.fromJson(json as Map<String, dynamic>))
+            .toList();
+
+        final historyMap = await PelunasanHistoryService.loadHistory();
+        for (final t in loaded) {
+          if (historyMap.containsKey(t.id_transaksi)) {
+            final rec = historyMap[t.id_transaksi]!;
+            t.status = 'LUNAS';
+            t.tanggalPelunasan = rec.tanggalPelunasan;
+          } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
+            t.tanggalPelunasan = t.date;
+          }
+        }
+
+        final pending = await OfflineSyncService.getPendingTransactions();
+        for (final p in pending) {
+          if (!loaded.any((t) => t.id_transaksi == p.id_transaksi)) {
+            p.isOffline = true;
+            loaded.insert(0, p);
+          }
+        }
 
         if (!mounted) return;
         setState(() {
@@ -61,32 +132,37 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
           _applyDateFilter();
           _loading = false;
         });
-      } else {
-        throw Exception("Server error (${response.statusCode})");
+      } catch (err) {
+        if (!mounted) return;
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Gagal memuat transaksi: $e"),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Gagal memuat transaksi: $e"),
-          backgroundColor: AppColors.error,
-        ),
-      );
     }
   }
 
   void _applyDateFilter() {
-    final dateStr = DateFormat('yyyy-MM-dd').format(_currentDate);
+    if (_isAllDates) {
+      _filteredTransactions = List.from(_allTransactions)
+        ..sort((a, b) => b.date.compareTo(a.date));
+      return;
+    }
+    final dateStr = DateFormat('yyyy-MM-dd').format(_currentDate.toLocal());
     _filteredTransactions = _allTransactions.where((trx) {
-      return DateFormat('yyyy-MM-dd').format(trx.date) == dateStr;
+      return DateFormat('yyyy-MM-dd').format(trx.date.toLocal()) == dateStr;
     }).toList()
       ..sort((a, b) => b.date.compareTo(a.date));
   }
 
   void _onDateSelected(DateTime date) {
     setState(() {
+      _isAllDates = false;
       _currentDate = date;
+      _statusFilter = 'SEMUA';
       _applyDateFilter();
     });
   }
@@ -103,21 +179,51 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     }
   }
 
-  double get _totalHarian {
-    return _filteredTransactions.fold(0.0, (sum, trx) => sum + trx.total);
-  }
+  List<Transaction> get _lunasTransactions =>
+      _filteredTransactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
 
-  int get _jumlahBon {
-    return _filteredTransactions.where((t) => t.status.toUpperCase() == 'BON').length;
+  List<Transaction> get _bonTransactions =>
+      _filteredTransactions.where((t) => t.status.toUpperCase() == 'BON').toList();
+
+  /// Seluruh transaksi BON yang belum lunas di seluruh sistem (Monitoring Bon)
+  List<Transaction> get _allActiveBonTransactions =>
+      _allTransactions.where((t) => t.status.toUpperCase() == 'BON').toList();
+
+  double get _omzetLunas =>
+      _lunasTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  double get _omzetBon =>
+      _bonTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  double get _totalPiutangBonBerjalan =>
+      _allActiveBonTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  double get _totalKeseluruhan =>
+      _filteredTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  List<Transaction> get _displayedTransactions {
+    if (_statusFilter == 'LUNAS') {
+      return _lunasTransactions;
+    } else if (_statusFilter == 'BON') {
+      return _bonTransactions;
+    } else if (_statusFilter == 'ALL_BON') {
+      return _allActiveBonTransactions;
+    }
+    return _filteredTransactions;
   }
 
   Future<pw.Document> generateDailyReport(
     List<Transaction> transactions,
-    DateTime date,
-  ) async {
+    DateTime date, {
+    bool isAllDates = false,
+  }) async {
     final pdf = pw.Document();
     final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
 
+    final lunasList = transactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
+    final bonList = transactions.where((t) => t.status.toUpperCase() == 'BON').toList();
+    final totalLunas = lunasList.fold(0.0, (sum, trx) => sum + trx.total);
+    final totalBon = bonList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalDaily = transactions.fold(0.0, (sum, trx) => sum + trx.total);
 
     pdf.addPage(
@@ -129,11 +235,15 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               pw.Text(
-                "LAPORAN HARIAN TRANSAKSI",
+                isAllDates
+                    ? "LAPORAN REKAPITULASI TRANSAKSI (SEMUA TANGGAL)"
+                    : "LAPORAN HARIAN TRANSAKSI",
                 style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
               ),
               pw.Text("Kencana Cahaya Amanah"),
-              pw.Text("Tanggal: ${DateFormat('dd MMMM yyyy').format(date)}"),
+              pw.Text(isAllDates
+                  ? "Periode: Semua Tanggal"
+                  : "Tanggal: ${DateFormat('dd MMMM yyyy').format(date)}"),
               pw.Divider(thickness: 1),
               pw.SizedBox(height: 8),
             ],
@@ -141,6 +251,60 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         },
         build: (context) {
           return [
+            // KOTAK RINGKASAN OMZET LUNAS & PIUTANG BON
+            pw.Container(
+              margin: const pw.EdgeInsets.only(bottom: 14),
+              padding: const pw.EdgeInsets.all(10),
+              decoration: pw.BoxDecoration(
+                color: PdfColors.grey100,
+                borderRadius: pw.BorderRadius.circular(6),
+                border: pw.Border.all(color: PdfColors.grey300),
+              ),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text(
+                    "RINGKASAN OMZET & PIUTANG",
+                    style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.grey800),
+                  ),
+                  pw.SizedBox(height: 6),
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text("• Omzet Lunas (Tunai) [${lunasList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.green900)),
+                      pw.Text(currencyFormat.format(totalLunas), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+                    ],
+                  ),
+                  pw.SizedBox(height: 3),
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text("• Piutang Bon (${isAllDates ? 'Semua Tanggal' : 'Tanggal Ini'}) [${bonList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.orange900)),
+                      pw.Text(currencyFormat.format(totalBon), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.orange900)),
+                    ],
+                  ),
+                  if (!isAllDates && _allActiveBonTransactions.isNotEmpty) ...[
+                    pw.SizedBox(height: 3),
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                      children: [
+                        pw.Text("• Total Piutang Bon Berjalan (Monitoring Bon) [${_allActiveBonTransactions.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.amber900)),
+                        pw.Text(currencyFormat.format(_totalPiutangBonBerjalan), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.amber900)),
+                      ],
+                    ),
+                  ],
+                  pw.Divider(thickness: 0.5, color: PdfColors.grey400),
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text("TOTAL KESELURUHAN OMZET [${transactions.length} Nota]:", style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                      pw.Text(currencyFormat.format(totalDaily), style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: PdfColors.blue800)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
             ...transactions.map(
               (trx) => pw.Container(
                 margin: const pw.EdgeInsets.only(bottom: 8),
@@ -160,8 +324,11 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                           style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
                         ),
                         pw.Text(
-                          "${trx.status} - ${currencyFormat.format(trx.total)}",
-                          style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                          "${trx.status == 'LUNAS' ? 'LUNAS' : 'BON'} - ${currencyFormat.format(trx.total)}",
+                          style: pw.TextStyle(
+                            fontWeight: pw.FontWeight.bold,
+                            color: trx.status == 'LUNAS' ? PdfColors.green800 : PdfColors.orange800,
+                          ),
                         ),
                       ],
                     ),
@@ -183,7 +350,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
             pw.Align(
               alignment: pw.Alignment.centerRight,
               child: pw.Text(
-                "TOTAL OMZET: ${currencyFormat.format(totalDaily)}",
+                "TOTAL KESELURUHAN: ${currencyFormat.format(totalDaily)}",
                 style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
               ),
             ),
@@ -196,7 +363,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   }
 
   Future<void> _exportPdf() async {
-    if (_filteredTransactions.isEmpty) {
+    final exportList = _displayedTransactions;
+    if (exportList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Tidak ada transaksi untuk diekspor")),
       );
@@ -204,8 +372,16 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     }
 
     try {
-      final pdf = await generateDailyReport(_filteredTransactions, _currentDate);
-      final fileName = 'laporan_${DateFormat('yyyyMMdd').format(_currentDate)}.pdf';
+      final pdf = await generateDailyReport(
+        exportList,
+        _currentDate,
+        isAllDates: _isAllDates || _statusFilter == 'ALL_BON',
+      );
+      final fileName = _statusFilter == 'ALL_BON'
+          ? 'laporan_piutang_bon_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf'
+          : (_isAllDates
+              ? 'laporan_semua_tanggal_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf'
+              : 'laporan_${DateFormat('yyyyMMdd').format(_currentDate)}.pdf');
       final output = await getTemporaryDirectory();
       final file = File('${output.path}/$fileName');
       final bytes = await pdf.save();
@@ -214,7 +390,11 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       try {
         await Share.shareXFiles(
           [XFile(file.path, mimeType: 'application/pdf', name: fileName)],
-          text: 'Laporan harian tanggal ${DateFormat('dd-MM-yyyy').format(_currentDate)}',
+          text: _statusFilter == 'ALL_BON'
+              ? 'Laporan Piutang Bon (Monitoring Bon)'
+              : (_isAllDates
+                  ? 'Laporan transaksi semua tanggal'
+                  : 'Laporan harian tanggal ${DateFormat('dd-MM-yyyy').format(_currentDate)}'),
         );
       } catch (shareErr) {
         debugPrint("ShareXFiles laporan gagal ($shareErr), fallback ke Printing.sharePdf...");
@@ -229,7 +409,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   }
 
   Future<void> _exportCsv() async {
-    if (_filteredTransactions.isEmpty) {
+    final exportList = _displayedTransactions;
+    if (exportList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Tidak ada transaksi untuk diarsipkan")),
       );
@@ -243,13 +424,17 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         await folder.create(recursive: true);
       }
 
-      final fileName = "laporan_${DateFormat('yyyyMMdd').format(_currentDate)}.csv";
+      final fileName = _statusFilter == 'ALL_BON'
+          ? "laporan_piutang_bon_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv"
+          : (_isAllDates
+              ? "laporan_semua_tanggal_${DateFormat('yyyyMMdd').format(DateTime.now())}.csv"
+              : "laporan_${DateFormat('yyyyMMdd').format(_currentDate)}.csv");
       final file = File("${folder.path}/$fileName");
 
       final buffer = StringBuffer();
       buffer.writeln("Tanggal,ID Transaksi,Konsumen,Alamat,Status,Total Nota,Barang,Qty,Bonus,Harga,Subtotal");
 
-      for (var trx in _filteredTransactions) {
+      for (var trx in exportList) {
         final trxDate = DateFormat('yyyy-MM-dd HH:mm').format(trx.date);
         for (var item in trx.items) {
           buffer.writeln(
@@ -257,7 +442,12 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
           );
         }
       }
-      buffer.writeln("TOTAL OMZET,,,,,$_totalHarian");
+      buffer.writeln("");
+      buffer.writeln("RINGKASAN OMZET & PIUTANG,,,,,,,,,");
+      buffer.writeln("TOTAL OMZET LUNAS,,,,,$_omzetLunas,(${_lunasTransactions.length} Nota Lunas)");
+      buffer.writeln("TOTAL PIUTANG BON (TANGGAL INI),,,,,$_omzetBon,(${_bonTransactions.length} Nota Bon)");
+      buffer.writeln("TOTAL PIUTANG BON BERJALAN (MONITORING BON),,,,,$_totalPiutangBonBerjalan,(${_allActiveBonTransactions.length} Nota Bon Aktif)");
+      buffer.writeln("TOTAL KESELURUHAN OMZET,,,,,$_totalKeseluruhan,(${_filteredTransactions.length} Total Nota)");
 
       await file.writeAsString(buffer.toString());
 
@@ -274,7 +464,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   }
 
   Future<void> _printAllStruk() async {
-    final count = _filteredTransactions.length;
+    final listToPrint = _displayedTransactions;
+    final count = listToPrint.length;
     if (count == 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Tidak ada transaksi untuk dicetak.")),
@@ -282,13 +473,19 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       return;
     }
 
+    final targetDesc = _statusFilter == 'ALL_BON'
+        ? 'Semua Piutang Bon (${_allActiveBonTransactions.length} Nota)'
+        : (_isAllDates
+            ? 'Semua Tanggal ($count Nota)'
+            : 'tanggal ${DateFormat('dd MMMM yyyy').format(_currentDate)}');
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Cetak Semua Struk?'),
         content: Text(
-          'Anda akan mencetak $count struk transaksi secara berurutan untuk tanggal '
-          '${DateFormat('dd MMMM yyyy').format(_currentDate)}. Pastikan printer Bluetooth siap dan kertas cukup.',
+          'Anda akan mencetak $count struk transaksi secara berurutan untuk $targetDesc. '
+          'Pastikan printer Bluetooth siap dan kertas cukup.',
         ),
         actions: [
           TextButton(
@@ -308,7 +505,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => PrintBluetoothAll(allTransactions: _filteredTransactions),
+        builder: (_) => PrintBluetoothAll(allTransactions: listToPrint),
       ),
     );
   }
@@ -319,8 +516,19 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Laporan Harian'),
+        title: Text(_isAllDates ? 'Laporan (Semua Tanggal)' : 'Laporan Harian'),
         actions: [
+          if (_allActiveBonTransactions.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.pending_actions_rounded, color: AppColors.bon),
+              tooltip: 'Monitoring Bon (${_allActiveBonTransactions.length} Nota)',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                ).then((_) => _fetchTransactions());
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.calendar_month_outlined),
             tooltip: 'Pilih Tanggal',
@@ -342,13 +550,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                   : ListView(
                       padding: const EdgeInsets.all(AppSpacing.screenMargin),
                       children: [
-                        // KARTU OMZET HARI INI
-                        OmzetSummaryCard(
-                          totalOmzet: _totalHarian,
-                          jumlahNota: _filteredTransactions.length,
-                          jumlahBon: _jumlahBon,
-                          formattedOmzet: currencyFormat.format(_totalHarian),
-                        ),
+                        // KARTU RINGKASAN OMZET (LUNAS, BON, & TOTAL KESELURUHAN)
+                        _buildOmzetBreakdown(currencyFormat),
 
                         const SizedBox(height: AppSpacing.lg),
 
@@ -401,14 +604,21 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                           ],
                         ),
 
-                        const SizedBox(height: AppSpacing.xl),
+                        const SizedBox(height: AppSpacing.lg),
+
+                        // FILTER CHIPS: SEMUA / HANYA LUNAS / HANYA BON / SEMUA PIUTANG BON
+                        _buildFilterChips(),
+
+                        const SizedBox(height: AppSpacing.md),
 
                         // DAFTAR TRANSAKSI
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(
-                              'Transaksi (${_filteredTransactions.length})',
+                              _statusFilter == 'ALL_BON'
+                                  ? 'Semua Piutang Bon (${_displayedTransactions.length})'
+                                  : 'Transaksi (${_displayedTransactions.length})',
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
@@ -416,7 +626,11 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                               ),
                             ),
                             Text(
-                              DateFormat('dd MMM yyyy').format(_currentDate),
+                              _statusFilter == 'ALL_BON'
+                                  ? 'Monitoring Bon Aktif'
+                                  : (_isAllDates
+                                      ? 'Semua Tanggal'
+                                      : DateFormat('dd MMM yyyy').format(_currentDate)),
                               style: const TextStyle(
                                 fontSize: 13,
                                 color: AppColors.textSecondary,
@@ -426,22 +640,27 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                         ),
                         const SizedBox(height: AppSpacing.md),
 
-                        if (_filteredTransactions.isEmpty)
+                        if (_displayedTransactions.isEmpty)
                           EmptyStateWidget(
                             icon: Icons.event_busy_outlined,
                             title: 'Tidak Ada Transaksi',
-                            subtitle:
-                                'Tidak ada transaksi yang tercatat pada tanggal ${DateFormat('dd MMMM yyyy').format(_currentDate)}.',
+                            subtitle: _statusFilter == 'ALL_BON'
+                                ? 'Tidak ada transaksi piutang bon yang terdeteksi di sistem.'
+                                : _filteredTransactions.isEmpty
+                                    ? (_isAllDates
+                                        ? 'Tidak ada riwayat transaksi yang tercatat di sistem.'
+                                        : 'Tidak ada transaksi yang tercatat pada tanggal ${DateFormat('dd MMMM yyyy').format(_currentDate)}.')
+                                    : 'Tidak ada transaksi berstatus ${_statusFilter == 'LUNAS' ? 'LUNAS' : 'BON'} pada tanggal ini.',
                           )
                         else
                           ListView.separated(
                             shrinkWrap: true,
                             physics: const NeverScrollableScrollPhysics(),
-                            itemCount: _filteredTransactions.length,
+                            itemCount: _displayedTransactions.length,
                             separatorBuilder: (_, __) =>
                                 const SizedBox(height: AppSpacing.cardGap),
                             itemBuilder: (context, index) {
-                              final trx = _filteredTransactions[index];
+                              final trx = _displayedTransactions[index];
                               return TransactionCard(
                                 transaction: trx,
                                 onTap: () {
@@ -468,6 +687,391 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     );
   }
 
+  Widget _buildOmzetBreakdown(NumberFormat currencyFormat) {
+    return Column(
+      children: [
+        // 1. KARTU TOTAL KESELURUHAN OMSET
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            gradient: AppColors.omzetGradient,
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            boxShadow: AppShadow.elevated,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.account_balance_wallet_outlined, color: Colors.white70, size: 18),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Total Keseluruhan Omzet',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _isAllDates
+                          ? 'Semua Tanggal • ${_filteredTransactions.length} Nota'
+                          : '${DateFormat('dd MMM').format(_currentDate)} • ${_filteredTransactions.length} Nota',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              FittedBox(
+                alignment: Alignment.centerLeft,
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  currencyFormat.format(_totalKeseluruhan),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.85),
+                  fontSize: 11.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // 2. KARTU RINCIAN: OMSET LUNAS (TUNAI) & PIUTANG BON (BELUM LUNAS)
+        Row(
+          children: [
+            // KARTU LUNAS (TUNAI)
+            Expanded(
+              child: InkWell(
+                onTap: () {
+                  setState(() {
+                    _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS';
+                  });
+                },
+                borderRadius: BorderRadius.circular(AppRadius.card),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _statusFilter == 'LUNAS' ? AppColors.lunas.withOpacity(0.18) : AppColors.lunasBg,
+                    borderRadius: BorderRadius.circular(AppRadius.card),
+                    border: Border.all(
+                      color: _statusFilter == 'LUNAS' ? AppColors.lunas : AppColors.lunas.withOpacity(0.35),
+                      width: _statusFilter == 'LUNAS' ? 2 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Omzet Lunas',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.lunas,
+                            ),
+                          ),
+                          Icon(Icons.check_circle, size: 16, color: AppColors.lunas),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          currencyFormat.format(_omzetLunas),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.lunas,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${_lunasTransactions.length} Nota Lunas',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            // KARTU BON (BELUM LUNAS)
+            Expanded(
+              child: InkWell(
+                onTap: () {
+                  setState(() {
+                    _statusFilter = _statusFilter == 'BON' ? 'SEMUA' : 'BON';
+                  });
+                },
+                borderRadius: BorderRadius.circular(AppRadius.card),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _statusFilter == 'BON' ? AppColors.bon.withOpacity(0.18) : AppColors.bonBg,
+                    borderRadius: BorderRadius.circular(AppRadius.card),
+                    border: Border.all(
+                      color: _statusFilter == 'BON' ? AppColors.bon : AppColors.bon.withOpacity(0.35),
+                      width: _statusFilter == 'BON' ? 2 : 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            _isAllDates ? 'Piutang Bon' : 'Bon Tanggal Ini',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.bon,
+                            ),
+                          ),
+                          const Icon(Icons.pending_actions_rounded, size: 16, color: AppColors.bon),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          currencyFormat.format(_omzetBon),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.bon,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${_bonTransactions.length} Nota Bon',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        // 3. KARTU MONITORING BON / TOTAL PIUTANG BON BERJALAN (AKUMULASI SEMUA TANGGAL)
+        if (_allActiveBonTransactions.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          InkWell(
+            onTap: () {
+              setState(() {
+                _statusFilter = _statusFilter == 'ALL_BON' ? 'SEMUA' : 'ALL_BON';
+              });
+            },
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _statusFilter == 'ALL_BON'
+                    ? AppColors.bon.withOpacity(0.18)
+                    : const Color(0xFFFFF8E1),
+                borderRadius: BorderRadius.circular(AppRadius.card),
+                border: Border.all(
+                  color: _statusFilter == 'ALL_BON'
+                      ? AppColors.bon
+                      : Colors.amber.shade600.withOpacity(0.6),
+                  width: _statusFilter == 'ALL_BON' ? 2 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.bon.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.account_balance_rounded,
+                      size: 20,
+                      color: AppColors.bon,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Text(
+                              'Total Piutang Bon Berjalan',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.bon,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.bon,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                '${_allActiveBonTransactions.length} Nota Aktif',
+                                style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          currencyFormat.format(_totalPiutangBonBerjalan),
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.bon,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        const Text(
+                          'Sesuai data Monitoring Bon. Ketuk untuk lihat daftar nota bon.',
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.bon),
+                    tooltip: 'Buka Monitoring Bon (Pelunasan)',
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                      ).then((_) => _fetchTransactions());
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildFilterChips() {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          FilterChip(
+            label: Text('Semua (${_filteredTransactions.length})'),
+            selected: _statusFilter == 'SEMUA',
+            onSelected: (_) => setState(() => _statusFilter = 'SEMUA'),
+            selectedColor: AppColors.primary,
+            labelStyle: TextStyle(
+              color: _statusFilter == 'SEMUA' ? Colors.white : AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11.5,
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: Text('Hanya Lunas (${_lunasTransactions.length})'),
+            selected: _statusFilter == 'LUNAS',
+            onSelected: (_) => setState(() => _statusFilter = 'LUNAS'),
+            selectedColor: AppColors.lunas,
+            labelStyle: TextStyle(
+              color: _statusFilter == 'LUNAS' ? Colors.white : AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11.5,
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: Text(_isAllDates ? 'Nota Bon (${_bonTransactions.length})' : 'Bon Tanggal Ini (${_bonTransactions.length})'),
+            selected: _statusFilter == 'BON',
+            onSelected: (_) => setState(() => _statusFilter = 'BON'),
+            selectedColor: AppColors.bon,
+            labelStyle: TextStyle(
+              color: _statusFilter == 'BON' ? Colors.white : AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11.5,
+            ),
+          ),
+          if (_allActiveBonTransactions.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            FilterChip(
+              avatar: const Icon(Icons.pending_actions, size: 14, color: AppColors.bon),
+              label: Text('Semua Piutang Bon (${_allActiveBonTransactions.length})'),
+              selected: _statusFilter == 'ALL_BON',
+              onSelected: (_) => setState(() => _statusFilter = 'ALL_BON'),
+              selectedColor: AppColors.bon.withOpacity(0.25),
+              side: BorderSide(
+                color: _statusFilter == 'ALL_BON' ? AppColors.bon : AppColors.bon.withOpacity(0.4),
+                width: _statusFilter == 'ALL_BON' ? 1.5 : 1,
+              ),
+              labelStyle: const TextStyle(
+                color: AppColors.bon,
+                fontWeight: FontWeight.w700,
+                fontSize: 11.5,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildHorizontalDateStrip() {
     final now = DateTime.now();
     // 14 hari ke belakang sampai hari ini
@@ -483,12 +1087,73 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.screenMargin),
-          itemCount: dates.length,
+          itemCount: dates.length + 1,
           separatorBuilder: (_, __) => const SizedBox(width: 8),
           itemBuilder: (context, index) {
-            final date = dates[index];
-            final isSelected = DateFormat('yyyy-MM-dd').format(date) ==
-                DateFormat('yyyy-MM-dd').format(_currentDate);
+            if (index == 0) {
+              final isSelected = _isAllDates;
+              return InkWell(
+                onTap: () {
+                  setState(() {
+                    _isAllDates = true;
+                    _statusFilter = 'SEMUA';
+                    _applyDateFilter();
+                  });
+                },
+                borderRadius: BorderRadius.circular(14),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 64,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isSelected ? AppColors.primary : AppColors.background,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: isSelected
+                          ? AppColors.primary
+                          : AppColors.surfaceBorder,
+                      width: 1,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.calendar_view_month_rounded,
+                        size: 16,
+                        color: isSelected
+                            ? Colors.white.withOpacity(0.9)
+                            : AppColors.textSecondary,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Semua',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: isSelected ? Colors.white : AppColors.textPrimary,
+                        ),
+                      ),
+                      Text(
+                        'Tanggal',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w500,
+                          color: isSelected
+                              ? Colors.white.withOpacity(0.85)
+                              : AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            final date = dates[index - 1];
+            final isSelected = !_isAllDates &&
+                DateFormat('yyyy-MM-dd').format(date) ==
+                    DateFormat('yyyy-MM-dd').format(_currentDate);
             final isToday = DateFormat('yyyy-MM-dd').format(date) ==
                 DateFormat('yyyy-MM-dd').format(now);
 

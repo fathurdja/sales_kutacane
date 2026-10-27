@@ -5,6 +5,7 @@ import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
@@ -78,7 +79,7 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
   }
 
   Future<void> fetchTransactions() async {
-    String url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    String url = '${ApiConfig.baseUrl}/transaksi';
     if (_selectedSalesUserId != null) {
       url = '$url?user_id=$_selectedSalesUserId';
     }
@@ -303,7 +304,7 @@ class TransactionListPageBackupState extends State<TransactionListPageBackup> {
         await OfflineSyncService.removePendingTransaction(id);
       } else {
         // Hapus via Laravel API dengan Auth Header
-        final url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi/$id';
+        final url = '${ApiConfig.baseUrl}/transaksi/$id';
         final authHeaders = await AuthService.getAuthHeaders();
         final response = await http.delete(
           Uri.parse(url),

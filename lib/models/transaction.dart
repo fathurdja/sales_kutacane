@@ -10,6 +10,7 @@ class Transaction {
   List<TransactionItem> items;
   double total;
   String status;
+  DateTime? tanggalPelunasan;
   bool isOffline;
 
   Transaction({
@@ -21,6 +22,7 @@ class Transaction {
     required this.items,
     required this.total,
     required this.status,
+    this.tanggalPelunasan,
     this.isOffline = false,
   });
 
@@ -29,6 +31,18 @@ class Transaction {
     final double parsedTotal = (rawTotal is num)
         ? rawTotal.toDouble()
         : (double.tryParse(rawTotal?.toString() ?? '0') ?? 0.0);
+
+    DateTime? parsedPelunasan;
+    if (json['tanggal_pelunasan'] != null &&
+        json['tanggal_pelunasan'].toString().isNotEmpty &&
+        json['tanggal_pelunasan'].toString() != 'null') {
+      parsedPelunasan =
+          DateTime.tryParse(json['tanggal_pelunasan'].toString())?.toLocal();
+    }
+
+    final rawDateStr =
+        json['tanggal']?.toString() ?? json['date']?.toString() ?? '';
+    final parsedDate = (DateTime.tryParse(rawDateStr) ?? DateTime.now()).toLocal();
 
     return Transaction(
       id: (json['id'] != null && json['id'].toString().isNotEmpty)
@@ -41,12 +55,10 @@ class Transaction {
           json['customerName']?.toString() ??
           '',
       alamat: json['alamat']?.toString() ?? '',
-      date: DateTime.tryParse(
-            json['tanggal']?.toString() ?? json['date']?.toString() ?? '',
-          ) ??
-          DateTime.now(),
+      date: parsedDate,
       total: parsedTotal,
       status: json['status']?.toString() ?? 'LUNAS',
+      tanggalPelunasan: parsedPelunasan,
       isOffline: json['is_offline'] == true,
       items: (json['items'] as List<dynamic>?)
               ?.map((e) => TransactionItem.fromJson(e as Map<String, dynamic>))
@@ -64,6 +76,9 @@ class Transaction {
       'date': dateFormat.format(date),
       'total': total.truncateToDouble() == total ? total.toInt() : total,
       'status': status,
+      'tanggal_pelunasan': tanggalPelunasan != null
+          ? DateFormat('yyyy-MM-dd').format(tanggalPelunasan!)
+          : null,
       'items': items.map((i) => i.toJson()).toList(),
     };
   }

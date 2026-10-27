@@ -32,7 +32,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       navigatorKey: rootNavigatorKey,
       debugShowCheckedModeBanner: false,
-      title: 'Sales Kencana v2',
+      title: 'Sales Kencana v3',
       theme: AppTheme.lightTheme,
       home: AuthService.currentUser != null
           ? const MainNavigationScreen()

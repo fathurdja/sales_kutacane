@@ -34,6 +34,10 @@ class StatusChip extends StatelessWidget {
       icon = Icons.schedule;
     }
 
+    final displayText = isCadangan
+        ? 'CADANGAN'
+        : (isLunas ? 'NOTA LUNAS' : 'NOTA BON');
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
@@ -46,7 +50,7 @@ class StatusChip extends StatelessWidget {
           Icon(icon, size: 14, color: fg),
           const SizedBox(width: 4),
           Text(
-            status.toUpperCase(),
+            displayText,
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,

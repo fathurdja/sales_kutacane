@@ -2,11 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:path_provider/path_provider.dart';
 
 class AuthService {
-  static const String baseUrl = 'https://laravel.fathurrzqn8n.web.id/api';
+  static String get baseUrl => ApiConfig.baseUrl;
   static const String _sessionFileName = 'user_session.json';
 
   static UserModel? _cachedUser;

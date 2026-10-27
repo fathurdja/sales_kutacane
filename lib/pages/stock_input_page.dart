@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
-import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
@@ -25,8 +24,7 @@ class _StockInputPageState extends State<StockInputPage>
   List<Item> _allProducts = [];
   List<Item> _filteredProducts = [];
   Map<String, dynamic> _terjualData = {};
-  int? _adminSelectedUserId;
-  List<UserModel> _salesUsers = [];
+
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -35,7 +33,8 @@ class _StockInputPageState extends State<StockInputPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    final isAdmin = AuthService.currentUser?.isAdmin == true;
+    _tabController = TabController(length: isAdmin ? 3 : 2, vsync: this);
     _searchCtrl.addListener(_applyProductFilter);
     _loadAllStockData();
   }
@@ -54,14 +53,10 @@ class _StockInputPageState extends State<StockInputPage>
     });
 
     try {
-      if (AuthService.currentUser?.isAdmin == true && _salesUsers.isEmpty) {
-        try {
-          _salesUsers = await AuthService.fetchUsers();
-        } catch (_) {}
-      }
+
 
       final results = await Future.wait([
-        StockApiService.fetchStockSummary(userId: _adminSelectedUserId),
+        StockApiService.fetchStockSummary(),
         StockApiService.fetchProducts(),
         StockApiService.fetchStockTerjual(),
       ]);
@@ -112,7 +107,377 @@ class _StockInputPageState extends State<StockInputPage>
   }
 
   // ===========================================================================
-  // MODAL & AKSI: SET STOK AWAL KELOMPOK
+  // MODAL & AKSI: FORM INPUT BARU TAMBAH STOK MASUK (RESTOCK FISIK)
+  // ===========================================================================
+  void _openTambahStockDialog(StockGroup group) {
+    if (AuthService.currentUser?.canManageStock != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Akses Ditolak: User biasa hanya memiliki hak akses melihat stok.',
+          ),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final tambahanCtrl = TextEditingController();
+    bool isSubmitting = false;
+
+    final groupColor = _getGroupColor(group.kelompok);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModalState) {
+          final int inputTambahan = int.tryParse(tambahanCtrl.text.trim()) ?? 0;
+          final int estimatedSisa = group.sisaStock + inputTambahan;
+          final int newStockAwal = group.stockAwal + inputTambahan;
+
+          return Container(
+            padding: EdgeInsets.only(
+              left: AppSpacing.screenMargin,
+              right: AppSpacing.screenMargin,
+              top: AppSpacing.xl,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + AppSpacing.xl,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: groupColor.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          Icons.add_shopping_cart_rounded,
+                          color: groupColor,
+                          size: 26,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Tambah Stok Masuk: ${group.displayName}',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                            Text(
+                              'Restock Fisik [${group.kelompok}] • Tambah ke Sisa Berjalan',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 12),
+
+                  // Info Status Berjalan Saat Ini
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSecondary,
+                      borderRadius: BorderRadius.circular(AppRadius.card),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _miniStat('Stok Awal Server', '${group.stockAwal}', group.unitName),
+                        Container(width: 1, height: 32, color: Colors.grey.shade300),
+                        _miniStat('Sudah Terjual', '${group.totalTerjual}', group.unitName),
+                        Container(width: 1, height: 32, color: Colors.grey.shade300),
+                        _miniStat('Sisa Fisik Saat Ini', '${group.sisaStock}', group.unitName),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+
+
+                  const Text(
+                    'Jumlah Tambahan Stok Masuk',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: tambahanCtrl,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    autofocus: true,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.0,
+                    ),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.add_circle_outline, color: Colors.green),
+                      prefixText: '+ ',
+                      prefixStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green),
+                      suffixText: group.unitName,
+                      suffixStyle: const TextStyle(fontWeight: FontWeight.w600),
+                      hintText: 'Contoh: 50',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.input),
+                      ),
+                    ),
+                    onChanged: (_) {
+                      setModalState(() {});
+                    },
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Quick Buttons Tambah (+10, +25, +50, +100)
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      ...[10, 25, 50, 100].map((qty) {
+                        return ActionChip(
+                          avatar: const Icon(Icons.add, size: 15, color: AppColors.primary),
+                          backgroundColor: Colors.blue.shade50,
+                          label: Text(
+                            '$qty ${group.unitName}',
+                            style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: 12),
+                          ),
+                          onPressed: () {
+                            setModalState(() {
+                              final current = int.tryParse(tambahanCtrl.text.trim()) ?? 0;
+                              tambahanCtrl.text = (current + qty).toString();
+                            });
+                          },
+                        );
+                      }),
+                      if (tambahanCtrl.text.isNotEmpty)
+                        ActionChip(
+                          avatar: const Icon(Icons.clear, size: 14, color: Colors.red),
+                          label: const Text('Reset', style: TextStyle(color: Colors.red, fontSize: 11)),
+                          onPressed: () {
+                            setModalState(() => tambahanCtrl.clear());
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Kalkulasi Interaktif & Transparan
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: inputTambahan > 0 ? Colors.green.shade50 : Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(AppRadius.card),
+                      border: Border.all(
+                        color: inputTambahan > 0 ? Colors.green.shade300 : Colors.grey.shade300,
+                        width: 1.2,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              inputTambahan > 0 ? Icons.check_circle_outline : Icons.calculate_outlined,
+                              size: 18,
+                              color: inputTambahan > 0 ? Colors.green.shade800 : Colors.grey.shade700,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Hasil Perhitungan Sisa Stok:',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color: inputTambahan > 0 ? Colors.green.shade900 : Colors.grey.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Sisa Stok Berjalan Saat Ini',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                            ),
+                            Text(
+                              '${group.sisaStock} ${group.unitName}',
+                              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Tambahan Masuk Baru',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                            ),
+                            Text(
+                              '+$inputTambahan ${group.unitName}',
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color: inputTambahan > 0 ? Colors.green.shade800 : Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6),
+                          child: Divider(height: 1),
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Sisa Stok Fisik Baru:',
+                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.textPrimary),
+                            ),
+                            Text(
+                              '$estimatedSisa ${group.unitName}',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w900,
+                                color: inputTambahan > 0 ? Colors.green.shade800 : AppColors.textPrimary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'ℹ️ Stok awal di server otomatis menjadi $newStockAwal ${group.unitName}. Barang yang sudah terjual (${group.totalTerjual} ${group.unitName}) tetap aman dan tidak akan memotong stok tambahan ini.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.shade700,
+                            height: 1.3,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Tombol Simpan
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: groupColor,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.button),
+                        ),
+                      ),
+                      icon: isSubmitting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.add_box_rounded),
+                      label: Text(
+                        isSubmitting
+                            ? 'Menyimpan...'
+                            : inputTambahan > 0
+                                ? 'Tambah $inputTambahan ${group.unitName} ke Sisa Stok'
+                                : 'Masukkan Jumlah Tambahan',
+                        style: const TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      onPressed: isSubmitting || inputTambahan <= 0
+                          ? null
+                          : () async {
+                              setModalState(() => isSubmitting = true);
+                              try {
+                                await StockApiService.addStockMasuk(
+                                  kelompok: group.kelompok,
+                                  tambahanQty: inputTambahan,
+                                  currentStockAwal: group.stockAwal,
+                                );
+                                if (ctx.mounted) Navigator.pop(ctx);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Berhasil menambah $inputTambahan ${group.unitName}! Sisa stok fisik ${group.displayName} kini menjadi $estimatedSisa ${group.unitName} (Berlaku untuk seluruh kasir).',
+                                      ),
+                                      backgroundColor: AppColors.lunas,
+                                      duration: const Duration(seconds: 4),
+                                    ),
+                                  );
+                                  _loadAllStockData();
+                                }
+                              } catch (e) {
+                                setModalState(() => isSubmitting = false);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Gagal menambah stok: $e'),
+                                      backgroundColor: AppColors.error,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // MODAL & AKSI: SET STOK AWAL KELOMPOK (SHIFT BARU / RESET)
   // ===========================================================================
   void _openSetStockAwalDialog(StockGroup group) {
     if (AuthService.currentUser?.canManageStock != true) {
@@ -130,7 +495,7 @@ class _StockInputPageState extends State<StockInputPage>
     final stockCtrl = TextEditingController(text: group.stockAwal.toString());
     bool resetTerjual = false;
     bool isSubmitting = false;
-    int? targetUserId = _adminSelectedUserId;
+
 
     showModalBottomSheet(
       context: context,
@@ -138,6 +503,11 @@ class _StockInputPageState extends State<StockInputPage>
       backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
+          final int inputQty = int.tryParse(stockCtrl.text.trim()) ?? 0;
+          final int simulatedSisa = resetTerjual
+              ? inputQty
+              : (inputQty - group.totalTerjual);
+
           return Container(
             padding: EdgeInsets.only(
               left: AppSpacing.screenMargin,
@@ -149,321 +519,354 @@ class _StockInputPageState extends State<StockInputPage>
               color: Colors.white,
               borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
                       decoration: BoxDecoration(
-                        color: _getGroupColor(group.kelompok).withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        _getGroupIcon(group.kelompok),
-                        color: _getGroupColor(group.kelompok),
-                        size: 26,
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Set Stok Awal: ${group.displayName}',
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          Text(
-                            'Kelompok Komoditas Fisik [${group.kelompok}]',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                const Divider(),
-                const SizedBox(height: 12),
-
-                // Info Status Saat Ini
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.bgSecondary,
-                    borderRadius: BorderRadius.circular(AppRadius.card),
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  const SizedBox(height: 16),
+                  Row(
                     children: [
-                      _miniStat('Stok Awal', '${group.stockAwal}', group.unitName),
-                      Container(width: 1, height: 32, color: Colors.grey.shade300),
-                      _miniStat('Terjual', '${group.totalTerjual}', group.unitName),
-                      Container(width: 1, height: 32, color: Colors.grey.shade300),
-                      _miniStat('Sisa Fisik', '${group.sisaStock}', group.unitName),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-
-                // Selector Alokasi Armada Sales (Khusus Admin)
-                if (AuthService.currentUser?.isAdmin == true && _salesUsers.isNotEmpty) ...[
-                  const Text(
-                    'Alokasikan Kuota Untuk Sales:',
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        ChoiceChip(
-                          label: const Text('Semua Sales (Global)'),
-                          selected: targetUserId == null,
-                          onSelected: (sel) {
-                            setModalState(() => targetUserId = null);
-                          },
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: _getGroupColor(group.kelompok).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        const SizedBox(width: 6),
-                        ..._salesUsers.map((u) {
-                          final isSel = targetUserId == u.id;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: ChoiceChip(
-                              avatar: Icon(Icons.person, size: 14, color: isSel ? Colors.white : Colors.grey.shade700),
-                              label: Text(u.name),
-                              selected: isSel,
-                              onSelected: (sel) {
-                                setModalState(() => targetUserId = sel ? u.id : null);
-                              },
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                ],
-
-                const Text(
-                  'Jumlah Kuota Stok Masuk',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: stockCtrl,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  autofocus: true,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.0,
-                  ),
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.inventory_2_outlined),
-                    suffixText: group.unitName,
-                    suffixStyle: const TextStyle(fontWeight: FontWeight.w600),
-                    hintText: 'Contoh: 100',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.input),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Opsi Quick Buttons
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    ActionChip(
-                      backgroundColor: Colors.blue.shade50,
-                      avatar: const Icon(Icons.history_rounded, size: 16, color: Colors.blue),
-                      label: Text(
-                        'Sisa Hari Ini (${group.sisaStock} ${group.unitName})',
-                        style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12),
+                        child: Icon(
+                          _getGroupIcon(group.kelompok),
+                          color: _getGroupColor(group.kelompok),
+                          size: 26,
+                        ),
                       ),
-                      onPressed: () {
-                        setModalState(() {
-                          final sisa = group.sisaStock < 0 ? 0 : group.sisaStock;
-                          stockCtrl.text = sisa.toString();
-                          resetTerjual = true;
-                        });
-                      },
-                    ),
-                    ...[50, 100, 150, 200].map((qty) {
-                      return ActionChip(
-                        label: Text('$qty ${group.unitName}'),
-                        onPressed: () {
-                          setModalState(() {
-                            stockCtrl.text = qty.toString();
-                          });
-                        },
-                      );
-                    }),
-                  ],
-                ),
-                const SizedBox(height: 16),
-
-                // Switch Reset Terjual
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.shade50,
-                    borderRadius: BorderRadius.circular(AppRadius.card),
-                    border: Border.all(color: Colors.amber.shade300),
-                  ),
-                  child: Row(
-                    children: [
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Reset Counter Penjualan ke 0?',
-                              style: TextStyle(
-                                fontSize: 13,
+                              'Set Stok Awal: ${group.displayName}',
+                              style: const TextStyle(
+                                fontSize: 16,
                                 fontWeight: FontWeight.w700,
-                                color: Colors.amber.shade900,
+                                color: AppColors.textPrimary,
                               ),
                             ),
-                            const SizedBox(height: 2),
                             Text(
-                              'Aktifkan jika ganti shift atau mulai hari baru agar hitungan terjual dimulai dari nol.',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.amber.shade800,
+                              'Kelompok Komoditas Fisik [${group.kelompok}] • Pembukaan Shift',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
                               ),
                             ),
                           ],
                         ),
                       ),
-                      Switch(
-                        value: resetTerjual,
-                        activeColor: AppColors.primary,
-                        onChanged: (val) {
-                          setModalState(() => resetTerjual = val);
-                        },
-                      ),
                     ],
                   ),
-                ),
-                const SizedBox(height: 20),
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  const SizedBox(height: 12),
 
-                // Tombol Simpan
-                SizedBox(
-                  width: double.infinity,
-                  height: 50,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.button),
-                      ),
+                  // Info Status Saat Ini
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSecondary,
+                      borderRadius: BorderRadius.circular(AppRadius.card),
                     ),
-                    icon: isSubmitting
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Icon(Icons.check_circle_outline),
-                    label: Text(
-                      isSubmitting ? 'Menyimpan...' : 'Simpan Kuota Stok Awal',
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _miniStat('Stok Awal', '${group.stockAwal}', group.unitName),
+                        Container(width: 1, height: 32, color: Colors.grey.shade300),
+                        _miniStat('Terjual', '${group.totalTerjual}', group.unitName),
+                        Container(width: 1, height: 32, color: Colors.grey.shade300),
+                        _miniStat('Sisa Fisik', '${group.sisaStock}', group.unitName),
+                      ],
                     ),
-                    onPressed: isSubmitting
-                        ? null
-                        : () async {
-                            final inputQty = int.tryParse(stockCtrl.text.trim());
-                            if (inputQty == null || inputQty < 0) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Masukkan jumlah stok yang valid!'),
-                                  backgroundColor: AppColors.error,
-                                ),
-                              );
-                              return;
-                            }
+                  ),
+                  const SizedBox(height: 14),
 
-                            setModalState(() => isSubmitting = true);
-                            try {
-                              await StockApiService.setStockAwal(
-                                kelompok: group.kelompok,
-                                stockAwal: inputQty,
-                                resetTerjual: resetTerjual,
-                                userId: targetUserId,
-                              );
-                              if (ctx.mounted) Navigator.pop(ctx);
-                              if (mounted) {
-                                final targetUserObj = _salesUsers
-                                    .where((u) => u.id == targetUserId)
-                                    .firstOrNull;
-                                final forText = targetUserObj != null
-                                    ? ' (Khusus ${targetUserObj.name})'
-                                    : ' (Global)';
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Stok awal ${group.displayName} berhasil diset ke $inputQty ${group.unitName}$forText',
-                                    ),
-                                    backgroundColor: AppColors.lunas,
+                  // Peringatan Pintar jika sudah ada penjualan berjalan
+                  if (group.totalTerjual > 0) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.amber.shade300),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.info_outline, size: 18, color: Colors.amber.shade900),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Hari ini sudah ada ${group.totalTerjual} ${group.unitName} terjual',
+                                  style: TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.amber.shade900,
                                   ),
-                                );
-                                _loadAllStockData();
-                              }
-                            } catch (e) {
-                              setModalState(() => isSubmitting = false);
-                              if (mounted) {
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Jika Anda hanya ingin menambah pasokan stok baru di tengah hari tanpa mengurangi sisa berjalan, gunakan form Tambah Stok Masuk.',
+                            style: TextStyle(fontSize: 11.5, color: Colors.amber.shade900),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.add_shopping_cart, size: 16),
+                              label: const Text('Buka Form Tambah Stok Masuk'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.amber.shade900,
+                                side: BorderSide(color: Colors.amber.shade400),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                _openTambahStockDialog(group);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+
+
+
+                  const Text(
+                    'Jumlah Kuota Stok Awal',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  TextField(
+                    controller: stockCtrl,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    autofocus: true,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.0,
+                    ),
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.inventory_2_outlined),
+                      suffixText: group.unitName,
+                      suffixStyle: const TextStyle(fontWeight: FontWeight.w600),
+                      hintText: 'Contoh: 100',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.input),
+                      ),
+                    ),
+                    onChanged: (_) => setModalState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Opsi Quick Buttons
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      ActionChip(
+                        backgroundColor: Colors.blue.shade50,
+                        avatar: const Icon(Icons.history_rounded, size: 16, color: Colors.blue),
+                        label: Text(
+                          'Sisa Hari Ini (${group.sisaStock} ${group.unitName})',
+                          style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                        onPressed: () {
+                          setModalState(() {
+                            final sisa = group.sisaStock < 0 ? 0 : group.sisaStock;
+                            stockCtrl.text = sisa.toString();
+                            resetTerjual = true;
+                          });
+                        },
+                      ),
+                      ...[50, 100, 150, 200].map((qty) {
+                        return ActionChip(
+                          label: Text('$qty ${group.unitName}'),
+                          onPressed: () {
+                            setModalState(() {
+                              stockCtrl.text = qty.toString();
+                            });
+                          },
+                        );
+                      }),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Switch Reset Terjual
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade50,
+                      borderRadius: BorderRadius.circular(AppRadius.card),
+                      border: Border.all(color: Colors.amber.shade300),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Reset Counter Penjualan ke 0?',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.amber.shade900,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Aktifkan saat pergantian shift atau hari baru agar hitungan terjual dimulai dari nol.',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.amber.shade800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Switch(
+                              value: resetTerjual,
+                              activeColor: AppColors.primary,
+                              onChanged: (val) {
+                                setModalState(() => resetTerjual = val);
+                              },
+                            ),
+                          ],
+                        ),
+                        const Divider(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Hasil Sisa Fisik:',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.amber.shade900),
+                            ),
+                            Text(
+                              '$simulatedSisa ${group.unitName} ${resetTerjual ? "(Terjual 0)" : "(Dipangkas ${group.totalTerjual})" }',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: simulatedSisa >= 0 ? Colors.green.shade800 : Colors.red,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Tombol Simpan
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.button),
+                        ),
+                      ),
+                      icon: isSubmitting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.check_circle_outline),
+                      label: Text(
+                        isSubmitting ? 'Menyimpan...' : 'Simpan Kuota Stok Awal',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      onPressed: isSubmitting
+                          ? null
+                          : () async {
+                              final inputQty = int.tryParse(stockCtrl.text.trim());
+                              if (inputQty == null || inputQty < 0) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Gagal menyimpan: $e'),
+                                  const SnackBar(
+                                    content: Text('Masukkan jumlah stok yang valid!'),
                                     backgroundColor: AppColors.error,
                                   ),
                                 );
+                                return;
                               }
-                            }
-                          },
+
+                              setModalState(() => isSubmitting = true);
+                              try {
+                                await StockApiService.setStockAwal(
+                                  kelompok: group.kelompok,
+                                  stockAwal: inputQty,
+                                  resetTerjual: resetTerjual,
+                                );
+                                if (ctx.mounted) Navigator.pop(ctx);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Stok awal ${group.displayName} berhasil diset ke $inputQty ${group.unitName} (Berlaku untuk seluruh kasir)',
+                                      ),
+                                      backgroundColor: AppColors.lunas,
+                                    ),
+                                  );
+                                  _loadAllStockData();
+                                }
+                              } catch (e) {
+                                setModalState(() => isSubmitting = false);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Gagal menyimpan: $e'),
+                                      backgroundColor: AppColors.error,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           );
         },
@@ -518,7 +921,6 @@ class _StockInputPageState extends State<StockInputPage>
               try {
                 await StockApiService.resetStockTerjual(
                   kelompok: kelompok,
-                  userId: _adminSelectedUserId,
                 );
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -675,15 +1077,19 @@ class _StockInputPageState extends State<StockInputPage>
   // ===========================================================================
   @override
   Widget build(BuildContext context) {
+    final isAdmin = AuthService.currentUser?.isAdmin == true;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Manajemen Stok & Kuota'),
+            Text(isAdmin ? 'Manajemen Stok & Kuota' : 'Monitoring Penjualan & Produk'),
             Text(
-              'Stok Awal Fisik & Terjual per Varian',
-              style: TextStyle(
+              isAdmin
+                  ? 'Stok Awal Fisik & Terjual per Varian'
+                  : 'Stok Terjual Armada & Katalog Produk',
+              style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w400,
                 color: AppColors.textSecondary,
@@ -704,11 +1110,16 @@ class _StockInputPageState extends State<StockInputPage>
           unselectedLabelColor: AppColors.textSecondary,
           indicatorColor: AppColors.primary,
           indicatorWeight: 3,
-          tabs: const [
-            Tab(icon: Icon(Icons.inventory_2_outlined, size: 20), text: 'Stok Awal'),
-            Tab(icon: Icon(Icons.point_of_sale_outlined, size: 20), text: 'Stok Terjual'),
-            Tab(icon: Icon(Icons.list_alt_outlined, size: 20), text: 'Master Produk'),
-          ],
+          tabs: isAdmin
+              ? const [
+                  Tab(icon: Icon(Icons.inventory_2_outlined, size: 20), text: 'Stok Awal'),
+                  Tab(icon: Icon(Icons.point_of_sale_outlined, size: 20), text: 'Stok Terjual'),
+                  Tab(icon: Icon(Icons.list_alt_outlined, size: 20), text: 'Master Produk'),
+                ]
+              : const [
+                  Tab(icon: Icon(Icons.point_of_sale_outlined, size: 20), text: 'Stok Terjual'),
+                  Tab(icon: Icon(Icons.list_alt_outlined, size: 20), text: 'Katalog Produk'),
+                ],
         ),
       ),
       body: _isLoading
@@ -736,11 +1147,16 @@ class _StockInputPageState extends State<StockInputPage>
                 Expanded(
                   child: TabBarView(
                     controller: _tabController,
-                    children: [
-                      _buildTabStokAwal(),
-                      _buildTabStokTerjual(),
-                      _buildTabMasterProduk(),
-                    ],
+                    children: isAdmin
+                        ? [
+                            _buildTabStokAwal(),
+                            _buildTabStokTerjual(),
+                            _buildTabMasterProduk(),
+                          ]
+                        : [
+                            _buildTabStokTerjual(),
+                            _buildTabMasterProduk(),
+                          ],
                   ),
                 ),
               ],
@@ -757,117 +1173,79 @@ class _StockInputPageState extends State<StockInputPage>
       child: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenMargin),
         children: [
-          // Filter Armada (Khusus Admin)
-          if (AuthService.currentUser?.isAdmin == true) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.purple.shade50,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.purple.shade200),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
+          // Header Status Kuota Komoditas Fisik Bersama (Shared Pool)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.blue.shade200),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.inventory_2_rounded, size: 24, color: Colors.blue.shade800),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.tune_rounded, size: 16, color: Colors.purple),
-                      SizedBox(width: 8),
                       Text(
-                        'Monitor Kuota Stok per Armada (Admin):',
+                        AuthService.currentUser?.isAdmin == true
+                            ? 'Stok Kuota Bersama (Shared Pool Seluruh Sales)'
+                            : 'Stok Fisik Tersedia • Jatah Kuota Kasir',
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 13,
                           fontWeight: FontWeight.w700,
-                          color: Colors.purple,
+                          color: Colors.blue.shade900,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        AuthService.currentUser?.isAdmin == true
+                            ? 'Stok yang diinput oleh Admin berlaku sebagai kuota bersama untuk semua Sales.'
+                            : 'Stok diinput oleh Admin. Anda dapat memantau stok awal, penjualan, dan sisa fisik secara real-time.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.blue.shade800,
+                          height: 1.3,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        ChoiceChip(
-                          label: const Text('Semua Armada (Global)'),
-                          selected: _adminSelectedUserId == null,
-                          selectedColor: Colors.purple.shade600,
-                          labelStyle: TextStyle(
-                            color: _adminSelectedUserId == null
-                                ? Colors.white
-                                : Colors.purple.shade800,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
-                          ),
-                          onSelected: (selected) {
-                            if (selected) {
-                              setState(() => _adminSelectedUserId = null);
-                              _loadAllStockData();
-                            }
-                          },
-                        ),
-                        const SizedBox(width: 8),
-                        ..._salesUsers.map((u) {
-                          final isSel = _adminSelectedUserId == u.id;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: ChoiceChip(
-                              avatar: Icon(
-                                Icons.person,
-                                size: 14,
-                                color: isSel ? Colors.white : Colors.purple,
-                              ),
-                              label: Text(u.name),
-                              selected: isSel,
-                              selectedColor: Colors.purple.shade600,
-                              labelStyle: TextStyle(
-                                color: isSel ? Colors.white : Colors.purple.shade800,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                              ),
-                              onSelected: (selected) {
-                                setState(() =>
-                                    _adminSelectedUserId = selected ? u.id : null);
-                                _loadAllStockData();
-                              },
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-            const SizedBox(height: 14),
-          ] else ...[
-            // Banner Read-Only & Isolasi untuk Sales Biasa
+          ),
+          const SizedBox(height: 14),
+
+          // Banner Panduan Tambah vs Set Stok
+          if (AuthService.currentUser?.canManageStock == true)
             Container(
-              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                color: Colors.green.shade50,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.blue.shade200),
+                border: Border.all(color: Colors.green.shade200),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.shield_outlined, color: Colors.blue, size: 22),
+                  Icon(Icons.add_shopping_cart, color: Colors.green.shade800, size: 22),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Mode Stok Terisolasi: Anda melihat sisa kuota khusus armada ${AuthService.currentUser?.name ?? "Sales"}. Transaksi Anda tidak mengurangi kuota armada lain.',
+                      'Ada stok tambahan masuk dari gudang/pabrik? Gunakan tombol "+ Tambah Stok" agar sisa fisik bertambah langsung tanpa mengurangi barang terjual.',
                       style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue.shade900,
-                        fontWeight: FontWeight.w500,
+                        fontSize: 11.5,
+                        color: Colors.green.shade900,
+                        fontWeight: FontWeight.w600,
+                        height: 1.3,
                       ),
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 14),
-          ],
 
           // Banner Panduan Singkat Arsitektur Stok Baru
           Container(
@@ -1103,26 +1481,62 @@ class _StockInputPageState extends State<StockInputPage>
                 ),
                 const SizedBox(height: 14),
 
-                // Tombol Aksi: Set Kuota Stok Awal (Khusus Admin / canManageStock)
+                // Tombol Aksi: Tambah Stok Masuk & Set Stok Awal (Khusus Admin / canManageStock)
                 if (AuthService.currentUser?.canManageStock == true)
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: groupColor,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                  Row(
+                    children: [
+                      // Tombol 1: Tambah Stok Masuk (Primary / Restock)
+                      Expanded(
+                        flex: 6,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: groupColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            elevation: 1,
+                          ),
+                          icon: const Icon(Icons.add_box_rounded, size: 18),
+                          label: const Text(
+                            '+ Tambah Stok',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
+                          onPressed: () => _openTambahStockDialog(group),
                         ),
                       ),
-                      icon: const Icon(Icons.add_circle_outline, size: 18),
-                      label: Text(
-                        'Set / Tambah Kuota ${group.unitName}',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      const SizedBox(width: 8),
+                      // Tombol 2: Set Stok Awal (Shift Baru)
+                      Expanded(
+                        flex: 5,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: groupColor,
+                            side: BorderSide(
+                              color: groupColor.withValues(alpha: 0.6),
+                              width: 1.5,
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                          icon: const Icon(Icons.tune_rounded, size: 17),
+                          label: const Text(
+                            'Set Stok Awal',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          onPressed: () => _openSetStockAwalDialog(group),
+                        ),
                       ),
-                      onPressed: () => _openSetStockAwalDialog(group),
-                    ),
+                    ],
                   )
                 else
                   Container(
@@ -1269,9 +1683,11 @@ class _StockInputPageState extends State<StockInputPage>
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Total Terjual Hari Ini',
-                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    Text(
+                      AuthService.currentUser?.isAdmin == true
+                          ? 'Total Terjual Semua Sales Hari Ini'
+                          : 'Total Terjual Saya (${AuthService.currentUser?.name ?? "Sales"})',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -1283,9 +1699,11 @@ class _StockInputPageState extends State<StockInputPage>
                       ),
                     ),
                     const SizedBox(height: 2),
-                    const Text(
-                      'Akumulasi seluruh varian Boneva',
-                      style: TextStyle(color: Colors.white60, fontSize: 11),
+                    Text(
+                      AuthService.currentUser?.isAdmin == true
+                          ? 'Akumulasi seluruh penjualan kasir'
+                          : 'Data penjualan transaksi armada Anda',
+                      style: const TextStyle(color: Colors.white60, fontSize: 11),
                     ),
                   ],
                 ),
@@ -1462,7 +1880,9 @@ class _StockInputPageState extends State<StockInputPage>
                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
                     ),
                     subtitle: Text(
-                      '${item.tyunit} • Kelompok: ${item.kelompok}\nSisa Kuota: ${item.sisaKuota} | Terjual: ${item.terjual}',
+                      (AuthService.currentUser?.isAdmin == true)
+                          ? '${item.tyunit} • Kelompok: ${item.kelompok}\nSisa Kuota: ${item.sisaKuota} | Terjual: ${item.terjual}'
+                          : '${item.tyunit} • Kelompok: ${item.kelompok}\nTerjual: ${item.terjual} unit',
                       style: const TextStyle(fontSize: 11.5, height: 1.3),
                     ),
                     trailing: Column(

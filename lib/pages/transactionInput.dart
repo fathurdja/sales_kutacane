@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
@@ -174,7 +175,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     } catch (_) {}
 
     // 2. Cek ke server utama jika sedang terkoneksi
-    const apiUrl = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    final apiUrl = '${ApiConfig.baseUrl}/transaksi';
     try {
       final response = await http
           .get(
@@ -194,6 +195,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
 
   Future<void> _saveToSupabase(Transaction transaction) async {
     final supabase = Supabase.instance.client;
+    final user = AuthService.currentUser;
     await supabase.from('transaksi').insert({
       'id_transaksi': transaction.id_transaksi,
       'customer_name': transaction.customerName,
@@ -202,6 +204,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       'total': transaction.total.toInt(),
       'status': _paymentStatus,
       'is_backup': true,
+      'sales_name': user?.name,
     });
 
     final itemsJson = transaction.items
@@ -222,7 +225,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   Future<SaveDestination> _saveTransactionToApi(Transaction transaction) async {
-    const url = 'https://laravel.fathurrzqn8n.web.id/api/transaksi';
+    final url = '${ApiConfig.baseUrl}/transaksi';
 
     final formattedDate =
         DateFormat('yyyy-MM-dd HH:mm:ss').format(transaction.date);
@@ -439,6 +442,100 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             content: Text('Silakan pilih produk untuk Barang #${i + 1}'),
             backgroundColor: AppColors.error,
           ),
+        );
+        return;
+      }
+    }
+
+    // 1. Validasi Stok per Item: Blokir pembuatan nota jika stok 0 atau jumlah melebihi kuota
+    for (int i = 0; i < _items.length; i++) {
+      final item = _items[i];
+      final tyunit = _resolveTyunit(item);
+      final matched = _products.firstWhere(
+        (p) =>
+            p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
+            p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
+        orElse: () => Item(
+          tyunit: tyunit,
+          name: item.nameController.text,
+          price: item.price,
+          stock: 0,
+        ),
+      );
+
+      final availableStock = matched.stock;
+      final requestedQty = item.quantity + item.bonus;
+
+      if (availableStock <= 0) {
+        _showStockQuotaWarning(
+          'Produk "${item.nameController.text}" tidak dapat dibuatkan nota karena stoknya 0 (Habis).\n\n'
+          'Harap lakukan input stok awal armada terlebih dahulu atau hapus barang ini dari nota.',
+        );
+        return;
+      }
+
+      if (requestedQty <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Jumlah untuk Barang #${i + 1} minimal 1'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+        return;
+      }
+
+      if (requestedQty > availableStock) {
+        _showStockQuotaWarning(
+          'Jumlah pesanan untuk "${item.nameController.text}" ($requestedQty item termasuk bonus) '
+          'melebihi stok yang tersedia ($availableStock item).\n\n'
+          'Harap kurangi jumlah pesanan atau lakukan penambahan stok awal.',
+        );
+        return;
+      }
+    }
+
+    // 2. Validasi per Kelompok Komoditas Fisik Agregat (misal: beberapa varian Galon digabung)
+    final Map<String, int> groupTotalRequested = {};
+    for (final item in _items) {
+      final tyunit = _resolveTyunit(item);
+      final matched = _products.firstWhere(
+        (p) =>
+            p.tyunit.toLowerCase() == tyunit.toLowerCase() ||
+            p.name.toLowerCase() == item.nameController.text.trim().toLowerCase(),
+        orElse: () => Item(
+          tyunit: tyunit,
+          name: item.nameController.text,
+          price: item.price,
+          stock: 0,
+        ),
+      );
+      final gKey = matched.kelompok.toUpperCase();
+      if (gKey.isNotEmpty) {
+        groupTotalRequested[gKey] =
+            (groupTotalRequested[gKey] ?? 0) + item.quantity + item.bonus;
+      }
+    }
+
+    for (final entry in groupTotalRequested.entries) {
+      final gKey = entry.key;
+      final totalRequested = entry.value;
+      final matchedProduct = _products.firstWhere(
+        (p) => p.kelompok.toUpperCase() == gKey,
+        orElse: () => Item(tyunit: '', name: '', price: 0, stock: 0),
+      );
+      final groupStock = matchedProduct.stock;
+      if (groupStock <= 0) {
+        _showStockQuotaWarning(
+          'Kelompok komoditas "$gKey" memiliki stok 0 (Habis).\n\n'
+          'Tidak dapat membuat nota untuk kelompok ini sebelum stok awal diisi.',
+        );
+        return;
+      }
+      if (totalRequested > groupStock) {
+        _showStockQuotaWarning(
+          'Total permintaan komoditas "$gKey" dalam nota ini ($totalRequested item) '
+          'melebihi sisa stok armada yang tersedia ($groupStock item).\n\n'
+          'Harap sesuaikan jumlah barang.',
         );
         return;
       }
@@ -830,6 +927,71 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
               child: ListView(
                 padding: const EdgeInsets.all(AppSpacing.screenMargin),
                 children: [
+                  // Banner Peringatan jika semua stok 0
+                  if (_products.isNotEmpty && _products.every((p) => p.stock <= 0)) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: AppSpacing.md),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(AppRadius.card),
+                        border: Border.all(color: Colors.red.shade300),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.warning_amber_rounded,
+                              color: Colors.red.shade700, size: 26),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Perhatian: Seluruh Stok Komoditas Habis (0)',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13,
+                                    color: Colors.red.shade800,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Stok armada belum diisi atau kuota sudah habis. Harap input stok awal terlebih dahulu agar dapat membuat nota.',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: Colors.red.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade700,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 8),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const StockInputPage(),
+                              ),
+                            ).then((_) => _fetchProducts()),
+                            child: const Text(
+                              'Input Stok',
+                              style: TextStyle(
+                                  fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
                   // CARD: Data Konsumen & Pembayaran
                   Container(
                     padding: const EdgeInsets.all(AppSpacing.lg),
@@ -1143,7 +1305,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                                                       BorderRadius.circular(4),
                                                 ),
                                                 child: Text(
-                                                  'Stok Tersedia: $availableStock',
+                                                  availableStock > 0 ? (AuthService.currentUser?.isAdmin == true ? 'Stok Tersedia: $availableStock' : 'Stok Tersedia') : 'Stok Habis (0)',
                                                   style: TextStyle(
                                                     fontSize: 11,
                                                     fontWeight: FontWeight.w600,
@@ -1520,90 +1682,149 @@ class _ProductPickerSheetState extends State<_ProductPickerSheet> {
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (ctx, idx) {
                           final product = _filtered[idx];
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 4,
-                            ),
-                            title: Text(
-                              product.name,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
-                                color: AppColors.textPrimary,
+                          final isOutOfStock = product.stock <= 0;
+
+                          return Opacity(
+                            opacity: isOutOfStock ? 0.55 : 1.0,
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 4,
                               ),
-                            ),
-                            subtitle: Padding(
-                              padding: const EdgeInsets.only(top: 4.0),
-                              child: Row(
+                              title: Row(
                                 children: [
-                                  Text(
-                                    product.tyunit.isEmpty ? '-' : product.tyunit,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppColors.textSecondary,
+                                  Expanded(
+                                    child: Text(
+                                      product.name,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                        color: isOutOfStock
+                                            ? AppColors.textSecondary
+                                            : AppColors.textPrimary,
+                                      ),
                                     ),
                                   ),
-                                  if (product.kelompok.isNotEmpty) ...[
+                                  if (isOutOfStock)
+                                    Container(
+                                      margin: const EdgeInsets.only(left: 6),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.errorBg,
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                            color: AppColors.error
+                                                .withValues(alpha: 0.3)),
+                                      ),
+                                      child: const Text(
+                                        'HABIS (0)',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.error,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              subtitle: Padding(
+                                padding: const EdgeInsets.only(top: 4.0),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      product.tyunit.isEmpty
+                                          ? '-'
+                                          : product.tyunit,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppColors.textSecondary,
+                                      ),
+                                    ),
+                                    if (product.kelompok.isNotEmpty) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 5, vertical: 1.5),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary
+                                              .withValues(alpha: 0.08),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                          border: Border.all(
+                                              color: AppColors.primary
+                                                  .withValues(alpha: 0.2)),
+                                        ),
+                                        child: Text(
+                                          product.kelompok,
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.primary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                     const SizedBox(width: 6),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 2,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: AppColors.primary.withOpacity(0.08),
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                                        color: isOutOfStock
+                                            ? AppColors.error
+                                                .withValues(alpha: 0.12)
+                                            : AppColors.success
+                                                .withValues(alpha: 0.12),
+                                        borderRadius:
+                                            BorderRadius.circular(4),
                                       ),
                                       child: Text(
-                                        product.kelompok,
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: AppColors.primary,
+                                        isOutOfStock
+                                            ? 'Stok: 0 (Kosong)'
+                                            : (AuthService.currentUser?.isAdmin == true ? 'Sisa Kuota: ${product.stock}' : 'Stok Tersedia'),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: isOutOfStock
+                                              ? AppColors.error
+                                              : AppColors.success,
                                         ),
                                       ),
                                     ),
                                   ],
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 6,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: product.stock > 0
-                                          ? AppColors.success.withOpacity(0.12)
-                                          : AppColors.error.withOpacity(0.12),
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      product.stock > 0
-                                          ? 'Sisa Kuota: ${product.stock}'
-                                          : 'Kuota Habis',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600,
-                                        color: product.stock > 0
-                                            ? AppColors.success
-                                            : AppColors.error,
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
-                            trailing: Text(
-                              currencyFormat.format(product.price),
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.primary,
+                              trailing: Text(
+                                currencyFormat.format(product.price),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: isOutOfStock
+                                      ? AppColors.textSecondary
+                                      : AppColors.primary,
+                                ),
                               ),
+                              onTap: isOutOfStock
+                                  ? () {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Stok "${product.name}" sedang habis (0). Harap input stok awal terlebih dahulu.',
+                                          ),
+                                          backgroundColor: AppColors.error,
+                                          behavior: SnackBarBehavior.floating,
+                                        ),
+                                      );
+                                    }
+                                  : () {
+                                      widget.onSelect(product);
+                                      Navigator.pop(ctx);
+                                    },
                             ),
-                            onTap: () {
-                              widget.onSelect(product);
-                              Navigator.pop(ctx);
-                            },
                           );
                         },
                       ),
