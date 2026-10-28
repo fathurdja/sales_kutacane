@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
+import 'package:kasir_kutacane/pages/customer_report_page.dart';
 import 'package:kasir_kutacane/pages/pelunasan_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -590,23 +591,34 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
             ? 'Laporan Hari Ini'
             : (_isAllDates ? 'Laporan (Semua Tanggal)' : 'Laporan Harian')),
         actions: [
-          if (_allActiveBonTransactions.isNotEmpty && _isAdmin)
+          if (_isAdmin) ...[
             IconButton(
-              icon: const Icon(Icons.pending_actions_rounded, color: AppColors.bon),
-              tooltip: 'Monitoring Bon (${_allActiveBonTransactions.length} Nota)',
+              icon: const Icon(Icons.people_alt_outlined, color: Colors.purple),
+              tooltip: 'Laporan Bon Pelanggan (Admin)',
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                  MaterialPageRoute(builder: (_) => const CustomerReportPage()),
                 ).then((_) => _fetchTransactions());
               },
             ),
-          if (_isAdmin)
+            if (_allActiveBonTransactions.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.pending_actions_rounded, color: AppColors.bon),
+                tooltip: 'Monitoring Bon (${_allActiveBonTransactions.length} Nota)',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PelunasanPage()),
+                  ).then((_) => _fetchTransactions());
+                },
+              ),
             IconButton(
               icon: const Icon(Icons.calendar_month_outlined),
               tooltip: 'Pilih Tanggal',
               onPressed: _pickArbitraryDate,
             ),
+          ],
         ],
       ),
       body: RefreshIndicator(
@@ -1100,6 +1112,31 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                     },
                   ),
                 ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CustomerReportPage()),
+              ).then((_) => _fetchTransactions());
+            },
+            icon: const Icon(Icons.people_outline_rounded, size: 18, color: Colors.purple),
+            label: const Text(
+              'Buka Rekap Bon & Lunas Per Pelanggan',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.purple,
+                fontSize: 12.5,
+              ),
+            ),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.purple),
+              padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.card),
               ),
             ),
           ),

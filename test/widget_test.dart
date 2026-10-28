@@ -1,30 +1,35 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:kasir_kutacane/main.dart';
+import 'package:kasir_kutacane/models/Item.dart';
+import 'package:kasir_kutacane/services/offline_sync_service.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  group('Tyunit & Commodity Group Resolution Tests', () {
+    test('Resolves proper commodity group from Item code', () {
+      final galonItem = Item.fromJson({'TYUNIT': 'BV06', 'NTYUNIT': 'Boneva Galon + isi', 'hjual': 75000});
+      expect(galonItem.kelompok, 'GALON');
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+      final botol600Item = Item.fromJson({'TYUNIT': 'BV09', 'NTYUNIT': 'Boneva Botol 600 Ml', 'hjual': 37000});
+      expect(botol600Item.kelompok, 'BOTOL_600');
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+      final botol1500Item = Item.fromJson({'TYUNIT': 'BV15', 'NTYUNIT': 'Boneva Botol 1,5 L', 'hjual': 41000});
+      expect(botol1500Item.kelompok, 'BOTOL_1500');
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+      final gelasItem = Item.fromJson({'TYUNIT': 'BV20', 'NTYUNIT': 'Boneva Gelas', 'hjual': 22000});
+      expect(gelasItem.kelompok, 'GELAS');
+    });
+
+    test('Resolves tyunit correctly even when empty or defaulted to BV01', () {
+      // Boneva Gelas with price 22000 should resolve to BV20
+      final codeGelas = OfflineSyncService.resolveItemTyunit('BV01', 'Boneva Gelas', 22000);
+      expect(codeGelas, 'BV20');
+
+      // Boneva Botol 600 with price 40000 should resolve to BV13
+      final codeBotol600 = OfflineSyncService.resolveItemTyunit(null, 'Boneva Botol 600 Ml', 40000);
+      expect(codeBotol600, 'BV13');
+
+      // Boneva Galon isi saja with price 13000 should resolve to BV02
+      final codeGalon13k = OfflineSyncService.resolveItemTyunit('BV01', 'Boneva Galon isi saja', 13000);
+      expect(codeGalon13k, 'BV02');
+    });
   });
 }

@@ -6,6 +6,8 @@ import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
 import 'package:kasir_kutacane/pages/arsip.dart';
+import 'package:kasir_kutacane/pages/customer_master_page.dart';
+import 'package:kasir_kutacane/pages/customer_report_page.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
 import 'package:kasir_kutacane/pages/login_page.dart';
 import 'package:kasir_kutacane/pages/pelunasan_page.dart';
@@ -73,7 +75,7 @@ class _MorePageState extends State<MorePage> {
 
           // Section: Piutang & Pembayaran (Khusus Admin)
           if (AuthService.currentUser?.isAdmin == true) ...[
-            _sectionHeader('Piutang & Pembayaran'),
+            _sectionHeader('Piutang & Pembayaran (Khusus Admin)'),
             const SizedBox(height: AppSpacing.sm),
             _menuCard(
               context,
@@ -87,8 +89,38 @@ class _MorePageState extends State<MorePage> {
                 MaterialPageRoute(builder: (_) => const PelunasanPage()),
               ),
             ),
+            const SizedBox(height: AppSpacing.cardGap),
+            _menuCard(
+              context,
+              icon: Icons.account_balance_wallet_outlined,
+              title: 'Laporan Bon & Lunas Pelanggan',
+              subtitle: 'Pantau sisa bon per pelanggan & riwayat lunas toko',
+              badgeText: 'Khusus Admin',
+              badgeColor: Colors.purple,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CustomerReportPage()),
+              ),
+            ),
             const SizedBox(height: AppSpacing.xxl),
           ],
+
+          // Section: Pelanggan & Mitra Toko
+          _sectionHeader('Pelanggan & Mitra Toko'),
+          const SizedBox(height: AppSpacing.sm),
+          _menuCard(
+            context,
+            icon: Icons.people_alt_outlined,
+            title: 'Master Data Pelanggan',
+            subtitle: 'Kelola 80+ toko pelanggan, tambah baru & kontak telepon',
+            badgeText: 'Master',
+            badgeColor: AppColors.primary,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const CustomerMasterPage()),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.xxl),
 
           // Section: Inventori & Stok
           _sectionHeader('Inventori & Stok Produk'),

@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/user_model.dart';
+import 'package:kasir_kutacane/pages/customer_report_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
@@ -663,6 +664,16 @@ class _PelunasanPageState extends State<PelunasanPage>
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.people_alt_outlined, color: Colors.purple),
+            tooltip: 'Laporan Bon Pelanggan',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const CustomerReportPage()),
+              ).then((_) => fetchTransactions());
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Segarkan',

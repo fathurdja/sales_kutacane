@@ -12,6 +12,7 @@ class ApiConfig {
   // Products & Stocks endpoints
   static Uri get productsUri => Uri.parse('$baseUrl/products');
   static Uri get masterStocksUri => Uri.parse('$baseUrl/master-stocks');
+  static Uri masterStockDetailUri(String tyunit) => Uri.parse('$baseUrl/master-stocks/$tyunit');
   static Uri get stockAwalUri => Uri.parse('$baseUrl/stock-awal');
   static Uri get stockTerjualUri => Uri.parse('$baseUrl/stock-terjual');
   static Uri get stockSummaryUri => Uri.parse('$baseUrl/stock-summary');
@@ -21,4 +22,8 @@ class ApiConfig {
   // Transaksi endpoints
   static Uri get transaksiUri => Uri.parse('$baseUrl/transaksi');
   static Uri transaksiDetailUri(String id) => Uri.parse('$baseUrl/transaksi/$id');
+
+  // Customers (Pelanggan) endpoints
+  static Uri get customersUri => Uri.parse('$baseUrl/customers');
+  static Uri customerDetailUri(int id) => Uri.parse('$baseUrl/customers/$id');
 }

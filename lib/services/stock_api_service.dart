@@ -6,7 +6,9 @@ import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/supabase_sync_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class StockApiService {
   static String get baseUrl => ApiConfig.baseUrl;
@@ -229,20 +231,40 @@ class StockApiService {
 
     final headers = await AuthService.getAuthHeaders();
     final response = await http
-        .post(
-          Uri.parse('$baseUrl/update-stock'),
+        .put(
+          ApiConfig.masterStockDetailUri(tyunit),
           headers: headers,
           body: jsonEncode(payload),
         )
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 10));
 
-    if (response.statusCode != 200) {
+    if (response.statusCode != 200 && response.statusCode != 201) {
       String msg = 'Gagal update data varian (${response.statusCode})';
       try {
         final b = jsonDecode(response.body);
         if (b is Map && b.containsKey('message')) msg = b['message'].toString();
       } catch (_) {}
       throw Exception(msg);
+    }
+
+    // Sinkronkan juga ke Supabase Backup jika ada
+    try {
+      final supabase = Supabase.instance.client;
+      await supabase.from('munit').update({
+        'ntyunit': name,
+        'hjual': price,
+        'userup': AuthService.currentUser?.username ?? 'admin',
+        'tglup': DateTime.now().toIso8601String().substring(0, 10),
+      }).eq('tyunit', tyunit);
+    } catch (e) {
+      debugPrint('Supabase master update error: $e');
+    }
+
+    // Perbarui cache produk lokal di memori & penyimpanan lokal HP
+    try {
+      await OfflineSyncService.updateCachedProduct(tyunit, name, price.toDouble());
+    } catch (e) {
+      debugPrint('Update local cached product error: $e');
     }
   }
 }

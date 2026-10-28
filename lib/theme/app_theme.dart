@@ -61,6 +61,7 @@ class AppRadius {
   static const double input = 14.0;
   static const double button = 14.0;
   static const double chipFull = 100.0; // kapsul penuh
+  static const double dialog = 16.0;
 }
 
 class AppSpacing {

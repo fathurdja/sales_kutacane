@@ -78,16 +78,58 @@ class Item {
 
   static String _inferKelompok(String codeOrId) {
     final code = codeOrId.toUpperCase();
-    if (code.contains('BV01') || code.contains('BV02') || code.contains('BV03') || code.contains('BV04') || code.contains('BV05') || code == '1' || code == '2' || code == '3' || code == '4' || code == '5') {
+    if (code.contains('BV01') ||
+        code.contains('BV02') ||
+        code.contains('BV03') ||
+        code.contains('BV04') ||
+        code.contains('BV05') ||
+        code.contains('BV06') ||
+        code.contains('BV07') ||
+        code == '1' ||
+        code == '2' ||
+        code == '3' ||
+        code == '4' ||
+        code == '5' ||
+        code == '6' ||
+        code == '7') {
       return 'GALON';
     }
-    if (code.contains('BV06') || code.contains('BV07') || code.contains('BV08') || code == '6' || code == '7' || code == '8') {
+    if (code.contains('BV08') ||
+        code.contains('BV09') ||
+        code.contains('BV10') ||
+        code.contains('BV11') ||
+        code.contains('BV12') ||
+        code.contains('BV13') ||
+        code == '8' ||
+        code == '9' ||
+        code == '10' ||
+        code == '11' ||
+        code == '12' ||
+        code == '13') {
       return 'BOTOL_600';
     }
-    if (code.contains('BV09') || code.contains('BV10') || code == '9' || code == '10') {
+    if (code.contains('BV14') ||
+        code.contains('BV15') ||
+        code.contains('BV16') ||
+        code.contains('BV17') ||
+        code == '14' ||
+        code == '15' ||
+        code == '16' ||
+        code == '17') {
       return 'BOTOL_1500';
     }
-    if (code.contains('BV11') || code.contains('BV12') || code.contains('BV13') || code == '11' || code == '12' || code == '13') {
+    if (code.contains('BV18') ||
+        code.contains('BV19') ||
+        code.contains('BV20') ||
+        code.contains('BV21') ||
+        code.contains('BV22') ||
+        code.contains('BV23') ||
+        code == '18' ||
+        code == '19' ||
+        code == '20' ||
+        code == '21' ||
+        code == '22' ||
+        code == '23') {
       return 'GELAS';
     }
     return '';

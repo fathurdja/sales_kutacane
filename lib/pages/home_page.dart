@@ -1146,21 +1146,32 @@ class HomePageState extends State<HomePage> {
             code.contains('BV03') ||
             code.contains('BV04') ||
             code.contains('BV05') ||
+            code.contains('BV06') ||
+            code.contains('BV07') ||
             name.contains('GALON')) {
           galonTerjual += qty;
-        } else if (code.contains('BV06') ||
-            code.contains('BV07') ||
-            code.contains('BV08') ||
-            name.contains('600')) {
-          btl600Terjual += qty;
-        } else if (code.contains('BV09') ||
+        } else if (code.contains('BV08') ||
+            code.contains('BV09') ||
             code.contains('BV10') ||
-            name.contains('1500') ||
-            name.contains('1.5')) {
-          btl1500Terjual += qty;
-        } else if (code.contains('BV11') ||
+            code.contains('BV11') ||
             code.contains('BV12') ||
             code.contains('BV13') ||
+            name.contains('600')) {
+          btl600Terjual += qty;
+        } else if (code.contains('BV14') ||
+            code.contains('BV15') ||
+            code.contains('BV16') ||
+            code.contains('BV17') ||
+            name.contains('1500') ||
+            name.contains('1.5') ||
+            name.contains('1,5')) {
+          btl1500Terjual += qty;
+        } else if (code.contains('BV18') ||
+            code.contains('BV19') ||
+            code.contains('BV20') ||
+            code.contains('BV21') ||
+            code.contains('BV22') ||
+            code.contains('BV23') ||
             name.contains('GELAS')) {
           gelasTerjual += qty;
         }

@@ -5,10 +5,12 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
+import 'package:kasir_kutacane/models/customer_model.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/customer_api_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
@@ -53,6 +55,12 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   final TextEditingController _alamatCustomer = TextEditingController();
   final List<TransactionItem> _items = [TransactionItem()];
 
+  // Master Pelanggan & Dropdown Autocomplete
+  List<Customer> _masterCustomers = [];
+  List<Customer> _customerSuggestions = [];
+  bool _showCustomerDropdown = false;
+  final FocusNode _customerFocusNode = FocusNode();
+
   DateTime _selectedDate = DateTime.now();
   String _transactionId = '';
   List<Item> _products = [];
@@ -66,6 +74,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   void initState() {
     super.initState();
     _fetchProducts();
+    _fetchCustomers();
     if (widget.transaction != null) {
       _transactionId = widget.transaction!.id_transaksi;
       _customerNameController.text = widget.transaction!.customerName;
@@ -91,12 +100,200 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
 
   @override
   void dispose() {
+    _customerFocusNode.dispose();
     _customerNameController.dispose();
     _alamatCustomer.dispose();
     for (final item in _items) {
       item.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _fetchCustomers() async {
+    try {
+      final list = await CustomerApiService.fetchCustomers();
+      if (!mounted) return;
+      setState(() {
+        _masterCustomers = list;
+      });
+    } catch (e) {
+      debugPrint("Error fetching master customers in transaction input: $e");
+    }
+  }
+
+  void _onCustomerNameChanged(String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) {
+      setState(() {
+        _customerSuggestions = [];
+        _showCustomerDropdown = false;
+      });
+      return;
+    }
+
+    final filtered = _masterCustomers.where((c) {
+      return c.name.toLowerCase().contains(q) ||
+          c.alamat.toLowerCase().contains(q);
+    }).toList();
+
+    setState(() {
+      _customerSuggestions = filtered;
+      _showCustomerDropdown = true;
+    });
+  }
+
+  void _selectCustomer(Customer c) {
+    setState(() {
+      _customerNameController.text = c.name;
+      if (c.alamat.isNotEmpty) {
+        _alamatCustomer.text = c.alamat;
+      }
+      _showCustomerDropdown = false;
+    });
+    FocusScope.of(context).unfocus();
+  }
+
+  void _openAddNewCustomerDialog(String initialName) {
+    setState(() => _showCustomerDropdown = false);
+    final nameCtrl = TextEditingController(text: initialName);
+    final alamatCtrl = TextEditingController(
+      text: _alamatCustomer.text.trim().isNotEmpty
+          ? _alamatCustomer.text.trim()
+          : 'Gorontalo',
+    );
+    final teleponCtrl = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool isSaving = false;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.dialog),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary),
+                SizedBox(width: 8),
+                Text('Tambah Pelanggan Baru', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: nameCtrl,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        labelText: 'Nama Pelanggan / Toko *',
+                        prefixIcon: Icon(Icons.storefront_outlined, size: 20),
+                      ),
+                      validator: (val) {
+                        if (val == null || val.trim().isEmpty) {
+                          return 'Nama pelanggan wajib diisi';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: alamatCtrl,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        labelText: 'Alamat Pelanggan *',
+                        prefixIcon: Icon(Icons.location_on_outlined, size: 20),
+                      ),
+                      validator: (val) {
+                        if (val == null || val.trim().isEmpty) {
+                          return 'Alamat pelanggan wajib diisi';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: teleponCtrl,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'No. Telepon / WhatsApp (Opsional)',
+                        prefixIcon: Icon(Icons.phone_outlined, size: 20),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: isSaving
+                    ? null
+                    : () async {
+                        if (!formKey.currentState!.validate()) return;
+                        setDlgState(() => isSaving = true);
+                        try {
+                          final newCust = await CustomerApiService.addCustomer(
+                            name: nameCtrl.text.trim(),
+                            alamat: alamatCtrl.text.trim(),
+                            telepon: teleponCtrl.text.trim(),
+                          );
+                          if (!mounted) return;
+                          setState(() {
+                            _masterCustomers.removeWhere((c) =>
+                                c.name.toLowerCase() ==
+                                newCust.name.toLowerCase());
+                            _masterCustomers.add(newCust);
+                            _customerNameController.text = newCust.name;
+                            _alamatCustomer.text = newCust.alamat;
+                            _showCustomerDropdown = false;
+                          });
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Pelanggan "${newCust.name}" berhasil didaftarkan!',
+                              ),
+                              backgroundColor: AppColors.lunas,
+                            ),
+                          );
+                        } catch (e) {
+                          setDlgState(() => isSaving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Gagal menambah pelanggan: $e'),
+                              backgroundColor: AppColors.error,
+                            ),
+                          );
+                        }
+                      },
+                child: isSaving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Simpan & Gunakan'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _generateTransactionId() async {
@@ -154,16 +351,17 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   }
 
   String _resolveTyunit(TransactionItem item) {
-    if (item.tyunit != null && item.tyunit!.trim().isNotEmpty) {
-      return item.tyunit!.trim();
+    if (item.tyunit != null &&
+        item.tyunit!.trim().isNotEmpty &&
+        item.tyunit!.trim().toUpperCase() != 'BV01') {
+      return item.tyunit!.trim().toUpperCase();
     }
-    final itemName = item.nameController.text.trim().toLowerCase();
-    final match = _products.firstWhere(
-      (p) => p.name.trim().toLowerCase() == itemName,
-      orElse: () => Item(tyunit: '', name: '', price: 0),
+    return OfflineSyncService.resolveItemTyunit(
+      item.tyunit,
+      item.nameController.text,
+      item.price,
+      _products,
     );
-    if (match.tyunit.isNotEmpty) return match.tyunit;
-    return _products.isNotEmpty ? _products.first.tyunit : 'BV01';
   }
 
   Future<bool> _checkTransactionIdExists(String id) async {
@@ -634,6 +832,11 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       }
     }
 
+    // Pastikan setiap item memiliki kode tyunit spesifik sebelum disimpan
+    for (final it in _items) {
+      it.tyunit = _resolveTyunit(it);
+    }
+
     final newTransaction = Transaction(
       id: widget.transaction?.id ?? '',
       id_transaksi: widget.transaction?.id_transaksi ?? _transactionId,
@@ -643,6 +846,8 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       items: List.from(_items),
       total: _calculateTotal(),
       status: _paymentStatus,
+      userId: AuthService.currentUser?.id,
+      userName: AuthService.currentUser?.name,
     );
 
     try {
@@ -1096,13 +1301,31 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                           ),
                         ),
                         const SizedBox(height: AppSpacing.md),
+                        // Input Nama Konsumen dengan Dropdown Autocomplete Master Pelanggan
                         TextFormField(
                           controller: _customerNameController,
-                          decoration: const InputDecoration(
+                          focusNode: _customerFocusNode,
+                          textCapitalization: TextCapitalization.words,
+                          decoration: InputDecoration(
                             labelText: 'Nama Konsumen *',
-                            hintText: 'Contoh: Toko Berkah',
-                            prefixIcon: Icon(Icons.person_outline, size: 20),
+                            hintText: 'Ketik inisial toko/pelanggan...',
+                            prefixIcon: const Icon(Icons.person_outline, size: 20),
+                            suffixIcon: _customerNameController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    onPressed: () {
+                                      _customerNameController.clear();
+                                      _onCustomerNameChanged('');
+                                    },
+                                  )
+                                : const Icon(Icons.arrow_drop_down, color: AppColors.textSecondary),
                           ),
+                          onChanged: _onCustomerNameChanged,
+                          onTap: () {
+                            if (_customerNameController.text.trim().isNotEmpty) {
+                              _onCustomerNameChanged(_customerNameController.text);
+                            }
+                          },
                           validator: (value) {
                             if (value == null || value.trim().isEmpty) {
                               return 'Nama konsumen wajib diisi';
@@ -1110,6 +1333,165 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
                             return null;
                           },
                         ),
+
+                        // Dropdown Saran dari Master Pelanggan & Tombol Tambah Pelanggan
+                        if (_showCustomerDropdown) ...[
+                          const SizedBox(height: 6),
+                          Container(
+                            constraints: const BoxConstraints(maxHeight: 220),
+                            decoration: BoxDecoration(
+                              color: AppColors.surface,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: AppColors.primary.withValues(alpha: 0.35),
+                                width: 1.2,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: ListView(
+                                shrinkWrap: true,
+                                padding: EdgeInsets.zero,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 6,
+                                    ),
+                                    color: AppColors.bgSecondary,
+                                    child: Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.storefront_rounded,
+                                          size: 14,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          _customerSuggestions.isNotEmpty
+                                              ? '${_customerSuggestions.length} Pelanggan Master Cocok:'
+                                              : 'Pelanggan tidak ada di Master',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        InkWell(
+                                          onTap: () => setState(() =>
+                                              _showCustomerDropdown = false),
+                                          child: const Icon(
+                                            Icons.close,
+                                            size: 16,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  ..._customerSuggestions.map((c) {
+                                    return ListTile(
+                                      dense: true,
+                                      leading: CircleAvatar(
+                                        radius: 13,
+                                        backgroundColor: AppColors.primary
+                                            .withValues(alpha: 0.12),
+                                        child: Text(
+                                          c.name.isNotEmpty
+                                              ? c.name[0].toUpperCase()
+                                              : '?',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.primary,
+                                          ),
+                                        ),
+                                      ),
+                                      title: Text(
+                                        c.name,
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.textPrimary,
+                                        ),
+                                      ),
+                                      subtitle: Text(
+                                        c.alamat.isNotEmpty
+                                            ? c.alamat
+                                            : 'Gorontalo',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      trailing: const Icon(
+                                        Icons.north_west_rounded,
+                                        size: 14,
+                                        color: AppColors.textSecondary,
+                                      ),
+                                      onTap: () => _selectCustomer(c),
+                                    );
+                                  }),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary
+                                          .withValues(alpha: 0.08),
+                                      border: const Border(
+                                        top: BorderSide(
+                                          color: AppColors.surfaceBorder,
+                                        ),
+                                      ),
+                                    ),
+                                    child: ListTile(
+                                      dense: true,
+                                      leading: const CircleAvatar(
+                                        radius: 13,
+                                        backgroundColor: AppColors.primary,
+                                        child: Icon(
+                                          Icons.add,
+                                          size: 15,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                      title: Text(
+                                        _customerNameController.text
+                                                .trim()
+                                                .isNotEmpty
+                                            ? '+ Tambah "${_customerNameController.text.trim()}" ke Master'
+                                            : '+ Tambah Pelanggan Baru...',
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                      subtitle: const Text(
+                                        'Simpan otomatis ke Master Pelanggan',
+                                        style: TextStyle(
+                                          fontSize: 10.5,
+                                          color: AppColors.textSecondary,
+                                        ),
+                                      ),
+                                      onTap: () => _openAddNewCustomerDialog(
+                                        _customerNameController.text.trim(),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: AppSpacing.md),
                         TextFormField(
                           controller: _alamatCustomer,

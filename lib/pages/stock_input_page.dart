@@ -1036,19 +1036,44 @@ class _StockInputPageState extends State<StockInputPage>
                 onPressed: isSaving
                     ? null
                     : () async {
-                        final newPrice = int.tryParse(priceCtrl.text.trim()) ?? item.price.toInt();
+                        final rawPriceText = priceCtrl.text.trim();
+                        final newPrice = rawPriceText.isEmpty ? 0 : (int.tryParse(rawPriceText) ?? 0);
+                        final newName = nameCtrl.text.trim().isEmpty ? item.name : nameCtrl.text.trim();
                         setDialogState(() => isSaving = true);
                         try {
                           await StockApiService.updateMasterProduct(
                             tyunit: item.tyunit,
-                            name: nameCtrl.text.trim(),
+                            name: newName,
                             price: newPrice,
                           );
+
+                          // Update data di memori secara langsung agar sinkron seketika
+                          if (mounted) {
+                            setState(() {
+                              _allProducts = _allProducts.map((p) {
+                                if (p.tyunit.toUpperCase() == item.tyunit.toUpperCase()) {
+                                  return Item(
+                                    tyunit: p.tyunit,
+                                    name: newName,
+                                    price: newPrice.toDouble(),
+                                    stock: p.stock,
+                                    kelompok: p.kelompok,
+                                    kuota: p.kuota,
+                                    terjual: p.terjual,
+                                    sisaKuota: p.sisaKuota,
+                                  );
+                                }
+                                return p;
+                              }).toList();
+                              _applyProductFilter();
+                            });
+                          }
+
                           if (ctx.mounted) Navigator.pop(ctx);
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text('Varian ${item.tyunit} berhasil diperbarui!'),
+                                content: Text('Varian ${item.tyunit} berhasil diperbarui (Harga: Rp $newPrice)!'),
                                 backgroundColor: AppColors.lunas,
                               ),
                             );
