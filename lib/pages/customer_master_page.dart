@@ -260,9 +260,48 @@ class _CustomerMasterPageState extends State<CustomerMasterPage> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Hapus Pelanggan?'),
-        content: Text(
-          'Apakah Anda yakin ingin menghapus data "${customer.name}" dari master pelanggan?',
+        title: const Row(
+          children: [
+            Icon(Icons.delete_outline_rounded, color: AppColors.error),
+            SizedBox(width: 8),
+            Text('Hapus Pelanggan?'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Apakah Anda yakin ingin menghapus data "${customer.name}" dari master pelanggan?',
+              style: const TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: const Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.shield_outlined, size: 18, color: AppColors.primary),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Riwayat transaksi toko ini tetap aman tersimpan di database dan laporan tidak akan hilang.',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: AppColors.textPrimary,
+                        height: 1.3,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(

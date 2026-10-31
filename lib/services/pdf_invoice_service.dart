@@ -136,7 +136,7 @@ class PdfInvoiceService {
                   child: pw.Text(
                     transaction.status == 'LUNAS'
                         ? 'NOTA LUNAS'
-                        : 'NOTA BON (BELUM LUNAS)',
+                        : 'FAKTUR PENJUALAN',
                     style: pw.TextStyle(
                       fontSize: 12,
                       fontWeight: pw.FontWeight.bold,
@@ -165,7 +165,7 @@ class PdfInvoiceService {
                             ? 'FAKTUR PENJUALAN - NOTA LUNAS'
                             : (transaction.status.toUpperCase() == 'QRIS'
                                 ? 'FAKTUR PENJUALAN - NOTA QRIS'
-                                : 'FAKTUR PENJUALAN - NOTA BON'),
+                                : 'FAKTUR PENJUALAN'),
                         style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
                       ),
                       pw.SizedBox(height: 4),

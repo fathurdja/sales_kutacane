@@ -16,6 +16,7 @@ import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
+import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -373,7 +374,20 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       }
     } catch (_) {}
 
-    // 2. Cek ke server utama jika sedang terkoneksi
+    // 2. Cek ke Supabase cadangan
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('transaksi')
+          .select('id_transaksi')
+          .eq('id_transaksi', id)
+          .maybeSingle();
+      if (res != null) {
+        return true;
+      }
+    } catch (_) {}
+
+    // 3. Cek ke server utama jika sedang terkoneksi
     final apiUrl = '${ApiConfig.baseUrl}/transaksi';
     try {
       final response = await http
@@ -381,7 +395,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             Uri.parse('$apiUrl?search=$id'),
             headers: {'Accept': 'application/json'},
           )
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 2));
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         return data.any((trx) => trx['id_transaksi'] == id);
@@ -395,7 +409,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
   Future<void> _saveToSupabase(Transaction transaction) async {
     final supabase = Supabase.instance.client;
     final user = AuthService.currentUser;
-    await supabase.from('transaksi').insert({
+    await supabase.from('transaksi').upsert({
       'id_transaksi': transaction.id_transaksi,
       'customer_name': transaction.customerName,
       'alamat': transaction.alamat,
@@ -404,7 +418,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       'status': _paymentStatus,
       'is_backup': true,
       'sales_name': user?.name,
-    });
+    }, onConflict: 'id_transaksi');
 
     final itemsJson = transaction.items
         .map(
@@ -420,7 +434,9 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
         )
         .toList();
 
-    await supabase.from('transaksi_items').insert(itemsJson);
+    if (itemsJson.isNotEmpty) {
+      await supabase.from('transaksi_items').upsert(itemsJson);
+    }
   }
 
   Future<SaveDestination> _saveTransactionToApi(Transaction transaction) async {
@@ -572,7 +588,11 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       // 2. Coba simpan ke server cadangan Supabase jika online
       try {
         await _saveToSupabase(transaction);
-        transaction.isOffline = false;
+        // Kurangi stok di Supabase munit agar sinkron untuk semua user
+        await SupabaseSyncService.decrementSupabaseStock(transaction.items);
+        // Simpan juga ke antrean lokal HP sebagai cadangan ganda
+        transaction.isOffline = true;
+        await OfflineSyncService.saveOfflineTransaction(transaction);
         await _decrementLocalStock(transaction.items);
         return SaveDestination.supabaseBackup;
       } catch (supabaseError) {

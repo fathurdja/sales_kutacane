@@ -75,8 +75,8 @@ class StockGroup {
 
     return StockGroup(
       kelompok: kelompok,
-      displayName: _getDisplayName(kelompok),
-      unitName: _getUnitName(kelompok),
+      displayName: getDisplayName(kelompok),
+      unitName: getUnitName(kelompok),
       stockAwal: stockAwal,
       totalTerjual: totalTerjual,
       sisaStock: sisaStock < 0 ? 0 : sisaStock,
@@ -85,7 +85,7 @@ class StockGroup {
     );
   }
 
-  static String _getDisplayName(String kelompok) {
+  static String getDisplayName(String kelompok) {
     switch (kelompok.toUpperCase()) {
       case 'GALON':
         return 'Boneva Galon (19L)';
@@ -100,7 +100,7 @@ class StockGroup {
     }
   }
 
-  static String _getUnitName(String kelompok) {
+  static String getUnitName(String kelompok) {
     switch (kelompok.toUpperCase()) {
       case 'GALON':
         return 'Galon';

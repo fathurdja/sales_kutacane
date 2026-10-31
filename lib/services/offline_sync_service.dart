@@ -8,6 +8,7 @@ import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
+import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -334,36 +335,21 @@ class OfflineSyncService {
           await removePendingTransaction(trx.id_transaksi);
           successCount++;
 
-          // Sinkronkan juga ke Supabase cadangan jika memungkinkan
+          // Sesuai instruksi: Data yang sudah masuk & cocok di server utama DIHAPUS dari buffer Supabase
+          // (transaksi & transaksi_items), dan data stock di munit TIDAK DIHAPUS.
           try {
             final supabase = Supabase.instance.client;
-            final itemsMap = trx.items.map((item) {
-              final tyunit = resolveItemTyunit(item.tyunit, item.name, item.price, cachedProducts);
-              return {
-                'id_transaksi': trx.id_transaksi,
-                'tyunit': tyunit,
-                'nama_barang': item.name,
-                'harga': item.price,
-                'quantity': item.quantity > 0 ? item.quantity : 1,
-                'bonus': item.bonus,
-                'subtotal': item.subtotal,
-              };
-            }).toList();
-
-            await supabase.from('transaksi').upsert({
-              'id_transaksi': trx.id_transaksi,
-              'customer_name': trx.customerName,
-              'alamat': trx.alamat,
-              'tanggal': formattedDate,
-              'total': trx.total,
-              'status': trx.status,
-              'user_id': trx.userId ?? AuthService.currentUser?.id,
-              'user_name': trx.userName ?? AuthService.currentUser?.name,
-              'is_offline': false,
-            });
-            await supabase.from('transaksi_items').upsert(itemsMap);
+            await supabase
+                .from('transaksi_items')
+                .delete()
+                .eq('id_transaksi', trx.id_transaksi);
+            await supabase
+                .from('transaksi')
+                .delete()
+                .eq('id_transaksi', trx.id_transaksi);
+            debugPrint('Buffer Supabase untuk ${trx.id_transaksi} berhasil dibersihkan.');
           } catch (e) {
-            debugPrint('Sinkronisasi Supabase saat sync: $e');
+            debugPrint('Catatan: Gagal membersihkan buffer Supabase: $e');
           }
         } else {
           failedCount++;
@@ -380,6 +366,14 @@ class OfflineSyncService {
         failedCount++;
         errors.add('${trx.id_transaksi}: $e');
       }
+    }
+
+    // Sinkronkan juga transaksi cadangan di buffer Supabase ke server utama
+    // dan bersihkan buffer setelah cocok, tanpa menghapus stok di munit
+    try {
+      await SupabaseSyncService.syncSupabaseTransactionsToServer();
+    } catch (e) {
+      debugPrint('Sync Supabase transactions error: $e');
     }
 
     // Jika ada yang berhasil disinkronkan, update data stok dari server agar stok di memori/cache cocok kembali

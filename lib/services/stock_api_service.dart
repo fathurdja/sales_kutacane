@@ -16,29 +16,43 @@ class StockApiService {
   /// 1. Ambil Ringkasan Lengkap Kelompok Komoditas Fisik (Stok Awal, Terjual, Sisa, Rincian Varian)
   /// Stok awal yang diinput oleh Admin berlaku sebagai kuota bersama (shared pool) untuk seluruh sales.
   static Future<List<StockGroup>> fetchStockSummary() async {
-    final uri = Uri.parse('$baseUrl/stock-summary');
-    final headers = await AuthService.getAuthHeaders();
-    final response = await http
-        .get(uri, headers: headers)
-        .timeout(const Duration(seconds: 8));
+    try {
+      final uri = Uri.parse('$baseUrl/stock-summary');
+      final headers = await AuthService.getAuthHeaders();
+      final response = await http
+          .get(uri, headers: headers)
+          .timeout(const Duration(seconds: 6));
 
-    if (response.statusCode == 200) {
-      final dynamic decoded = jsonDecode(response.body);
-      List<dynamic> list;
+      if (response.statusCode == 200) {
+        final dynamic decoded = jsonDecode(response.body);
+        List<dynamic> list;
 
-      if (decoded is Map && decoded.containsKey('groups')) {
-        list = decoded['groups'] as List<dynamic>;
-      } else if (decoded is List) {
-        list = decoded;
+        if (decoded is Map && decoded.containsKey('groups')) {
+          list = decoded['groups'] as List<dynamic>;
+        } else if (decoded is List) {
+          list = decoded;
+        } else {
+          list = [];
+        }
+
+        return list
+            .map((json) => StockGroup.fromJson(json as Map<String, dynamic>))
+            .toList();
       } else {
-        list = [];
+        throw Exception('Server merespons kode ${response.statusCode}');
       }
-
-      return list
-          .map((json) => StockGroup.fromJson(json as Map<String, dynamic>))
-          .toList();
-    } else {
-      throw Exception('Gagal memuat ringkasan stok (${response.statusCode})');
+    } catch (e) {
+      debugPrint('fetchStockSummary gagal ($e), mencoba memuat dari Supabase backup...');
+      try {
+        final supabaseGroups = await SupabaseSyncService.fetchStockSummaryFromSupabase();
+        if (supabaseGroups.isNotEmpty) {
+          debugPrint('Berhasil memuat ${supabaseGroups.length} kelompok stok dari Supabase cadangan.');
+          return supabaseGroups;
+        }
+      } catch (errSupabase) {
+        debugPrint('Supabase fetchStockSummary error: $errSupabase');
+      }
+      rethrow;
     }
   }
 
@@ -208,6 +222,7 @@ class StockApiService {
         final backupProducts = await SupabaseSyncService.fetchProductsFromSupabase();
         if (backupProducts.isNotEmpty) {
           debugPrint('Berhasil memuat ${backupProducts.length} produk dari Supabase backup.');
+          await OfflineSyncService.cacheProducts(backupProducts);
           return backupProducts;
         }
       } catch (errSupabase) {

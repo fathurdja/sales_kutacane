@@ -39,20 +39,14 @@ class TestPrint {
         Align.center.val,
       );
 
-      // ====== JUDUL STRUK ======
+      // ====== JUDUL STRUK (HEADER) ======
       final statusUpper = transaction.status.toUpperCase();
       final isLunas = statusUpper == 'LUNAS';
       final isQris = statusUpper == 'QRIS';
-      final String judulStruk;
-      if (isLunas) {
-        judulStruk = "*** NOTA LUNAS ***";
-      } else if (isQris) {
-        judulStruk = "*** NOTA QRIS (MENUNGGU VERIFIKASI) ***";
-      } else {
-        judulStruk = "*** NOTA BON (BELUM LUNAS) ***";
-      }
+
+      // Sesuai nota asli (gambar kiri): Selalu tampilkan STRUK PENJUALAN
       await bluetooth.printCustom(
-        judulStruk,
+        "STRUK PENJUALAN",
         Size.boldMedium.val,
         Align.center.val,
       );
@@ -124,9 +118,9 @@ class TestPrint {
       if (isLunas) {
         statusBayarText = "LUNAS";
       } else if (isQris) {
-        statusBayarText = "QRIS (CEK ADMIN)";
+        statusBayarText = "QRIS";
       } else {
-        statusBayarText = "BON (BELUM LUNAS)";
+        statusBayarText = "BON";
       }
       await bluetooth.printLeftRight(
         "STATUS BAYAR",

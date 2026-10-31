@@ -25,9 +25,22 @@ class Item {
         ? rawPrice.toDouble()
         : (double.tryParse(rawPrice?.toString() ?? '0') ?? 0.0);
 
-    final kelompok = json['kdklp']?.toString() ??
+    final tyunit = json['TYUNIT']?.toString() ??
+        json['tyunit']?.toString() ??
+        (json['id'] != null
+            ? 'BV${json['id'].toString().padLeft(2, '0')}'
+            : '');
+    final name =
+        json['NTYUNIT']?.toString() ?? json['name']?.toString() ?? json['nama_produk']?.toString() ?? '';
+
+    final kelompok = (json['kdklp']?.toString() ??
         json['kelompok']?.toString() ??
-        _inferKelompok(json['TYUNIT']?.toString() ?? json['tyunit']?.toString() ?? json['id']?.toString() ?? '');
+        _inferKelompok(tyunit.isNotEmpty ? tyunit : (json['id']?.toString() ?? ''))).toUpperCase();
+
+    final rawStock = json['stock'];
+    final int parsedStock = (rawStock is num)
+        ? rawStock.toInt()
+        : (int.tryParse(rawStock?.toString() ?? '0') ?? 0);
 
     final rawKuota = json['kuota'] ?? json['stock_awal'];
     final int parsedKuota = (rawKuota is num)
@@ -45,19 +58,12 @@ class Item {
         : (int.tryParse(rawSisaKuota?.toString() ?? '0') ??
             (parsedKuota > 0 ? (parsedKuota - parsedTerjual).clamp(0, 999999) : 0));
 
-
-    final tyunit = json['TYUNIT']?.toString() ??
-        json['tyunit']?.toString() ??
-        (json['id'] != null
-            ? 'BV${json['id'].toString().padLeft(2, '0')}'
-            : '');
-    final name =
-        json['NTYUNIT']?.toString() ?? json['name']?.toString() ?? json['nama_produk']?.toString() ?? '';
-
-    // Prioritaskan sisaKuota fisik jika ada. Jika kuota adalah 0 atau sisa 0, stok adalah 0.
+    // Prioritaskan sisaKuota fisik jika ada. Jika sisaKuota 0, gunakan parsedStock atau kuota - terjual
     final int effectiveStock;
     if (parsedSisaKuota > 0) {
       effectiveStock = parsedSisaKuota;
+    } else if (parsedStock > 0) {
+      effectiveStock = parsedStock;
     } else if (parsedKuota > 0) {
       effectiveStock = (parsedKuota - parsedTerjual).clamp(0, 999999);
     } else {

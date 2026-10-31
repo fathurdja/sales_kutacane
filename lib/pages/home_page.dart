@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -133,19 +134,51 @@ class HomePageState extends State<HomePage> {
             setState(() => _stockGroups = groups);
           }
         } catch (_) {}
+
+        // Sinkronkan transaksi buffer dari Supabase ke server utama di latar belakang
+        unawaited(SupabaseSyncService.syncSupabaseTransactionsToServer());
       } else {
         throw Exception('Server error (${response.statusCode})');
       }
     } catch (e) {
       if (!mounted) return;
-      // Jika server offline / downtime, gunakan data offline lokal saja
+      debugPrint("Server utama offline ($e), memuat cadangan Supabase & antrean lokal...");
+
+      // 1. Ambil transaksi hari ini dari Supabase cadangan jika ada
+      List<Transaction> supabaseToday = [];
+      try {
+        supabaseToday =
+            await SupabaseSyncService.fetchTodayTransactionsFromSupabase();
+      } catch (errSupabase) {
+        debugPrint("Gagal fetchTodayTransactionsFromSupabase: $errSupabase");
+      }
+
+      // 2. Gabungkan transaksi lokal dan Supabase (hilangkan duplikat)
+      final Set<String> existingLocalIds =
+          offlineToday.map((e) => e.id_transaksi).toSet();
+      final unmergedSupabase = supabaseToday
+          .where((sup) => !existingLocalIds.contains(sup.id_transaksi))
+          .toList();
+
+      final mergedOffline = [...offlineToday, ...unmergedSupabase]
+        ..sort((a, b) => b.date.compareTo(a.date));
+
+      // 3. Muat ringkasan kuota komoditas fisik dari Supabase (agar stok tetap kelihatan!)
+      List<StockGroup> fallbackGroups = [];
+      try {
+        fallbackGroups =
+            await SupabaseSyncService.fetchStockSummaryFromSupabase();
+      } catch (errStock) {
+        debugPrint("Gagal fetchStockSummaryFromSupabase: $errStock");
+      }
+
       setState(() {
         _loading = false;
-        _errorMessage = offlineToday.isNotEmpty
-            ? null
-            : 'Server sedang tidak dapat dijangkau (Mode Offline).';
-        _todayTransactions = offlineToday
-          ..sort((a, b) => b.date.compareTo(a.date));
+        _errorMessage = null; // Menghilangkan banner error merah jika cadangan Supabase aktif
+        _todayTransactions = mergedOffline;
+        if (fallbackGroups.isNotEmpty) {
+          _stockGroups = fallbackGroups;
+        }
       });
     }
   }
