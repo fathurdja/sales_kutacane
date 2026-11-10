@@ -33,6 +33,10 @@ class Transaction {
   bool get isLunas => status.toUpperCase() == 'LUNAS';
   bool get isBon => status.toUpperCase() == 'BON';
   bool get isQris => status.toUpperCase() == 'QRIS';
+  bool get isBonLunas =>
+      status.toUpperCase() == 'BON LUNAS' ||
+      status.toUpperCase() == 'BON_LUNAS';
+  bool get isSettled => isLunas || isBonLunas;
 
   /// Parse string tanggal dari server secara presisi tanpa pergeseran timezone (UTC drift)
   static DateTime parseServerDate(String? raw) {

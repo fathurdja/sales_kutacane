@@ -11,6 +11,7 @@ import 'package:kasir_kutacane/pages/customer_report_page.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
 import 'package:kasir_kutacane/pages/login_page.dart';
 import 'package:kasir_kutacane/pages/pelunasan_page.dart';
+import 'package:kasir_kutacane/pages/stock_flow_report_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/uploaddatatransaksi.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -140,6 +141,19 @@ class _MorePageState extends State<MorePage> {
             ),
           ),
           if (AuthService.currentUser?.isAdmin == true) ...[
+            const SizedBox(height: AppSpacing.cardGap),
+            _menuCard(
+              context,
+              icon: Icons.swap_vert_circle_outlined,
+              title: 'Monitoring Stok Masuk & Keluar',
+              subtitle: 'Laporan arus pasokan masuk & barang terjual (Harian & Bulanan)',
+              badgeText: 'Khusus Admin',
+              badgeColor: AppColors.primary,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const StockFlowReportPage()),
+              ),
+            ),
             const SizedBox(height: AppSpacing.cardGap),
             _menuCard(
               context,

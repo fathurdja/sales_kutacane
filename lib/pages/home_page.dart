@@ -8,6 +8,7 @@ import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/pages/guide_page.dart';
 import 'package:kasir_kutacane/pages/pelunasan_page.dart';
+import 'package:kasir_kutacane/pages/stock_flow_report_page.dart';
 import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/pages/transactionDetail.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
@@ -95,7 +96,7 @@ class HomePageState extends State<HomePage> {
         for (final t in allServerTransactions) {
           if (historyMap.containsKey(t.id_transaksi)) {
             final rec = historyMap[t.id_transaksi]!;
-            t.status = 'LUNAS';
+            t.status = 'BON LUNAS';
             t.tanggalPelunasan = rec.tanggalPelunasan;
           } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
             t.tanggalPelunasan = t.date;
@@ -289,6 +290,11 @@ class HomePageState extends State<HomePage> {
                   context,
                   MaterialPageRoute(builder: (_) => const StockInputPage()),
                 ).then((_) => fetchTodayTransactions());
+              } else if (val == 'stock_flow') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const StockFlowReportPage()),
+                );
               } else if (val == 'printer') {
                 Navigator.push(
                   context,
@@ -322,6 +328,18 @@ class HomePageState extends State<HomePage> {
                           size: 20, color: AppColors.bon),
                       SizedBox(width: 10),
                       Text('Pelunasan Bon'),
+                    ],
+                  ),
+                ),
+              if (AuthService.currentUser?.isAdmin == true)
+                const PopupMenuItem(
+                  value: 'stock_flow',
+                  child: Row(
+                    children: [
+                      Icon(Icons.swap_vert_circle_outlined,
+                          size: 20, color: AppColors.primary),
+                      SizedBox(width: 10),
+                      Text('Monitoring Stok Keluar-Masuk'),
                     ],
                   ),
                 ),

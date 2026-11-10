@@ -31,7 +31,12 @@ class Item {
             ? 'BV${json['id'].toString().padLeft(2, '0')}'
             : '');
     final name =
-        json['NTYUNIT']?.toString() ?? json['name']?.toString() ?? json['nama_produk']?.toString() ?? '';
+        json['NTYUNIT']?.toString() ??
+        json['ntyunit']?.toString() ??
+        json['name']?.toString() ??
+        json['nama_produk']?.toString() ??
+        json['nama_barang']?.toString() ??
+        '';
 
     final kelompok = (json['kdklp']?.toString() ??
         json['kelompok']?.toString() ??

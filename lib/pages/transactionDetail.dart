@@ -9,6 +9,7 @@ import 'package:kasir_kutacane/services/offline_sync_service.dart';
 import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/printerBluetooth.dart';
+import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
 import 'package:kasir_kutacane/widgets/app_widgets.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -152,35 +153,52 @@ class _TransactionDetailPageState extends State<TransactionDetailPage> {
 
     final isAdmin = AuthService.currentUser?.isAdmin == true;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Detail Nota'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.picture_as_pdf_outlined),
-            tooltip: 'Preview & Cetak PDF',
-            onPressed: () => _previewPdf(_currentTransaction),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.pop(
+          context,
+          _currentTransaction != widget.transaction ? _currentTransaction : null,
+        );
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: BackButton(
+            onPressed: () => Navigator.pop(
+              context,
+              _currentTransaction != widget.transaction ? _currentTransaction : null,
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'Edit Nota',
-            onPressed: () async {
-              final updated = await Navigator.push<Transaction>(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => TransactionInputPage(
-                    transaction: _currentTransaction,
-                    onSave: (t) {},
+          title: const Text('Detail Nota'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.picture_as_pdf_outlined),
+              tooltip: 'Preview & Cetak PDF',
+              onPressed: () => _previewPdf(_currentTransaction),
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit_outlined),
+              tooltip: 'Edit Nota',
+              onPressed: () async {
+                final updated = await Navigator.push<Transaction>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TransactionInputPage(
+                      transaction: _currentTransaction,
+                      onSave: (t) {},
+                    ),
                   ),
-                ),
-              );
-              if (updated != null) {
-                setState(() {
-                  _currentTransaction = updated;
-                });
-              }
-            },
-          ),
+                );
+                if (updated != null) {
+                  setState(() {
+                    _currentTransaction = updated;
+                  });
+                  // Sinkronkan data produk & stok terbaru dari server
+                  StockApiService.fetchProducts();
+                }
+              },
+            ),
           if (isAdmin)
             IconButton(
               icon: _isDeleting
@@ -510,6 +528,7 @@ class _TransactionDetailPageState extends State<TransactionDetailPage> {
           ),
         ],
       ),
+    ),
     );
   }
 

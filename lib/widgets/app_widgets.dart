@@ -14,6 +14,7 @@ class StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLunas = status.toUpperCase() == 'LUNAS';
+    final isBonLunas = status.toUpperCase() == 'BON LUNAS' || status.toUpperCase() == 'BON_LUNAS';
     final isQris = status.toUpperCase() == 'QRIS';
     final isCadangan = status.toUpperCase() == 'CADANGAN';
 
@@ -25,6 +26,10 @@ class StatusChip extends StatelessWidget {
       bg = AppColors.backupBg;
       fg = AppColors.backup;
       icon = Icons.cloud_outlined;
+    } else if (isBonLunas) {
+      bg = const Color(0xFFE6FCF5);
+      fg = const Color(0xFF0CA678);
+      icon = Icons.task_alt_rounded;
     } else if (isLunas) {
       bg = AppColors.lunasBg;
       fg = AppColors.lunas;
@@ -41,9 +46,11 @@ class StatusChip extends StatelessWidget {
 
     final displayText = isCadangan
         ? 'CADANGAN'
-        : (isLunas
-            ? 'NOTA LUNAS'
-            : (isQris ? 'NOTA QRIS' : 'NOTA BON'));
+        : (isBonLunas
+            ? 'BON LUNAS'
+            : (isLunas
+                ? 'NOTA LUNAS'
+                : (isQris ? 'NOTA QRIS' : 'NOTA BON')));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

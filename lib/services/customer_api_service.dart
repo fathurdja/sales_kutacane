@@ -31,7 +31,7 @@ class CustomerApiService {
 
       final response = await http
           .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);

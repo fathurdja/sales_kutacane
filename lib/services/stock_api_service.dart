@@ -7,6 +7,7 @@ import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/stock_group.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pending_stock_sync_service.dart';
 import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -21,7 +22,7 @@ class StockApiService {
       final headers = await AuthService.getAuthHeaders();
       final response = await http
           .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final dynamic decoded = jsonDecode(response.body);
@@ -59,86 +60,208 @@ class StockApiService {
   /// 2. Set Stok Awal (Kuota Masuk) untuk satu kelompok komoditas fisik
   /// Kuota ini berlaku untuk seluruh pengguna kasir (global shared stock).
   /// - [resetTerjual]: Jika true, counter penjualan varian di kelompok ini akan direset ke 0.
+  /// Jika server utama Laravel offline, otomatis fallback ke Supabase munit & antrean pending.
   static Future<Map<String, dynamic>> setStockAwal({
     required String kelompok,
     required int stockAwal,
     bool resetTerjual = false,
   }) async {
+    final groupKey = kelompok.toUpperCase();
     final payload = {
-      'kelompok': kelompok.toUpperCase(),
+      'kelompok': groupKey,
       'stock_awal': stockAwal,
       'reset_terjual': resetTerjual,
     };
 
-    final headers = await AuthService.getAuthHeaders();
-    final response = await http
-        .post(
-          Uri.parse('$baseUrl/stock-awal'),
-          headers: headers,
-          body: jsonEncode(payload),
-        )
-        .timeout(const Duration(seconds: 10));
+    // 1. Coba simpan ke Server Utama Laravel
+    try {
+      final headers = await AuthService.getAuthHeaders();
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/stock-awal'),
+            headers: headers,
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 5));
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      final decoded = jsonDecode(response.body);
-      return decoded is Map<String, dynamic> ? decoded : {'success': true};
-    } else {
-      String msg = 'Gagal menyimpan stok awal (${response.statusCode})';
-      try {
-        final b = jsonDecode(response.body);
-        if (b is Map && b.containsKey('message')) msg = b['message'].toString();
-      } catch (_) {}
-      throw Exception(msg);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final decoded = jsonDecode(response.body);
+
+        // Sinkronkan ke Supabase & cache lokal secara non-blocking
+        unawaited(SupabaseSyncService.setStockAwalToSupabase(
+          kelompok: groupKey,
+          stockAwal: stockAwal,
+          resetTerjual: resetTerjual,
+        ));
+        unawaited(OfflineSyncService.updateCachedGroupStock(
+          groupKey,
+          stockAwal,
+          stockAwal,
+          resetTerjual: resetTerjual,
+        ));
+
+        return decoded is Map<String, dynamic> ? decoded : {'success': true};
+      }
+    } catch (e) {
+      debugPrint('POST /stock-awal gagal ($e), beralih ke fallback Supabase & offline queue...');
     }
+
+    // 2. Fallback: Simpan ke Supabase Backup (munit)
+    bool supabaseSuccess = false;
+    try {
+      supabaseSuccess = await SupabaseSyncService.setStockAwalToSupabase(
+        kelompok: groupKey,
+        stockAwal: stockAwal,
+        resetTerjual: resetTerjual,
+      );
+    } catch (errSupabase) {
+      debugPrint('Fallback Supabase setStockAwal error: $errSupabase');
+    }
+
+    // 3. Masukkan ke Antrean Pending Sync (agar saat server Laravel menyala, disinkronkan & monitoring di-sync)
+    await PendingStockSyncService.addPendingEntry(
+      PendingStockEntry(
+        id: 'STOCK-AWAL-${DateTime.now().millisecondsSinceEpoch}',
+        timestamp: DateTime.now(),
+        kdklp: groupKey,
+        jenisAksi: 'SET_STOK_AWAL',
+        jumlah: stockAwal,
+        resetTerjual: resetTerjual,
+        keterangan: resetTerjual
+            ? 'Reset & set stok awal offline ($groupKey = $stockAwal)'
+            : 'Set stok awal offline ($groupKey = $stockAwal)',
+      ),
+    );
+
+    // 4. Update cache produk lokal di HP
+    await OfflineSyncService.updateCachedGroupStock(
+      groupKey,
+      stockAwal,
+      stockAwal,
+      resetTerjual: resetTerjual,
+    );
+
+    return {
+      'success': true,
+      'is_offline': true,
+      'fallback': supabaseSuccess ? 'supabase' : 'local_storage',
+      'message': supabaseSuccess
+          ? 'Stok awal berhasil disimpan ke database cadangan Supabase (Server utama offline). Data akan otomatis disinkronkan ke server saat menyala.'
+          : 'Stok awal tersimpan di penyimpanan offline HP & akan disinkronkan otomatis saat server menyala.',
+    };
   }
 
   /// 2B. Tambah Pasokan Stok Masuk (Restock Fisik di Tengah Hari)
-  /// Menambahkan [tambahanQty] langsung ke sisa stok fisik yang sedang berjalan tanpa mereset counter penjualan.
-  /// Formula Backend:
-  ///   stok_awal_baru = current_stok_awal + tambahanQty
-  ///   sisa_stok_baru = (current_stok_awal + tambahanQty) - total_terjual = current_sisa + tambahanQty
+  /// Menggunakan endpoint resmi API-v2 /stock-masuk (terhubung ke tabel stock_entries & stock_monitorings).
+  /// Jika server utama Laravel offline, otomatis fallback ke Supabase munit & antrean pending.
   static Future<Map<String, dynamic>> addStockMasuk({
     required String kelompok,
     required int tambahanQty,
     int? currentStockAwal,
+    String? keterangan,
   }) async {
-    int baseStockAwal = currentStockAwal ?? 0;
+    final groupKey = kelompok.toUpperCase();
+
+    // 1. Coba endpoint resmi API-v2 /stock-masuk di server utama
     try {
-      final groups = await fetchStockSummary();
-      final currentGroup = groups
-          .where((g) => g.kelompok.toUpperCase() == kelompok.toUpperCase())
-          .firstOrNull;
-      if (currentGroup != null) {
-        baseStockAwal = currentGroup.stockAwal;
+      final headers = await AuthService.getAuthHeaders();
+      final body = jsonEncode({
+        'kdklp': groupKey,
+        'jumlah': tambahanQty,
+        'keterangan': keterangan ?? 'Penambahan pasokan stok $groupKey',
+      });
+      final res = await http
+          .post(ApiConfig.stockMasukUri, headers: headers, body: body)
+          .timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        final decoded = jsonDecode(res.body);
+
+        // Sinkronkan ke Supabase & cache lokal
+        unawaited(SupabaseSyncService.addStockMasukToSupabase(
+          kelompok: groupKey,
+          tambahanQty: tambahanQty,
+          keterangan: keterangan,
+        ));
+
+        return decoded is Map<String, dynamic> ? decoded : {'success': true};
       }
-    } catch (_) {
-      // Fallback ke currentStockAwal jika terjadi kegagalan jaringan
+    } catch (e) {
+      debugPrint('POST /stock-masuk gagal ($e), beralih ke fallback Supabase & offline queue...');
     }
 
-    final newStockAwal = baseStockAwal + tambahanQty;
-    return await setStockAwal(
-      kelompok: kelompok,
-      stockAwal: newStockAwal,
-      resetTerjual: false,
+    // 2. Fallback: Simpan ke Supabase Backup (munit)
+    bool supabaseSuccess = false;
+    try {
+      supabaseSuccess = await SupabaseSyncService.addStockMasukToSupabase(
+        kelompok: groupKey,
+        tambahanQty: tambahanQty,
+        keterangan: keterangan,
+      );
+    } catch (errSupabase) {
+      debugPrint('Fallback Supabase addStockMasuk error: $errSupabase');
+    }
+
+    // 3. Masukkan ke Antrean Pending Sync (agar saat server Laravel menyala, disinkronkan & monitoring di-sync)
+    await PendingStockSyncService.addPendingEntry(
+      PendingStockEntry(
+        id: 'STOCK-MASUK-${DateTime.now().millisecondsSinceEpoch}',
+        timestamp: DateTime.now(),
+        kdklp: groupKey,
+        jenisAksi: 'TAMBAH_PASOKAN',
+        jumlah: tambahanQty,
+        resetTerjual: false,
+        keterangan: keterangan ?? 'Penambahan pasokan stok offline $groupKey',
+      ),
     );
+
+    // 4. Update cache produk lokal di HP
+    try {
+      final cached = await OfflineSyncService.getCachedProducts();
+      final matched = cached.where((p) => p.kelompok.toUpperCase() == groupKey).firstOrNull;
+      if (matched != null) {
+        final newKuota = matched.kuota + tambahanQty;
+        final newSisa = (matched.sisaKuota > 0 ? matched.sisaKuota : matched.stock) + tambahanQty;
+        await OfflineSyncService.updateCachedGroupStock(groupKey, newKuota, newSisa);
+      }
+    } catch (_) {}
+
+    return {
+      'success': true,
+      'is_offline': true,
+      'fallback': supabaseSuccess ? 'supabase' : 'local_storage',
+      'message': supabaseSuccess
+          ? 'Pasokan stok berhasil disimpan ke database cadangan Supabase (Server utama offline). Data akan otomatis disinkronkan ke server saat menyala.'
+          : 'Pasokan stok tersimpan di penyimpanan offline HP & akan disinkronkan otomatis saat server menyala.',
+    };
   }
 
   /// 3. Ambil Rincian Barang Terjual Hari Ini (per varian)
   static Future<Map<String, dynamic>> fetchStockTerjual({
     String? kelompok,
   }) async {
-    final queryParams = <String, String>{};
-    if (kelompok != null && kelompok.isNotEmpty) queryParams['kelompok'] = kelompok;
+    try {
+      final queryParams = <String, String>{};
+      if (kelompok != null && kelompok.isNotEmpty) queryParams['kelompok'] = kelompok;
 
-    final uri = Uri.parse('$baseUrl/stock-terjual').replace(queryParameters: queryParams.isEmpty ? null : queryParams);
-    final headers = await AuthService.getAuthHeaders();
-    final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
+      final uri = Uri.parse('$baseUrl/stock-terjual').replace(queryParameters: queryParams.isEmpty ? null : queryParams);
+      final headers = await AuthService.getAuthHeaders();
+      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 3));
 
-    if (response.statusCode == 200) {
-      return jsonDecode(response.body) as Map<String, dynamic>;
-    } else {
-      throw Exception('Gagal memuat data stok terjual (${response.statusCode})');
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      }
+    } catch (e) {
+      debugPrint('fetchStockTerjual offline fallback: $e');
     }
+
+    // Fallback aman ketika server offline, agar Future.wait di UI tidak error / macet
+    return {
+      'success': true,
+      'is_offline': true,
+      'total_terjual': 0,
+      'items': [],
+    };
   }
 
   /// 4. Reset Counter Terjual Kembali ke 0 (Khusus Admin)
@@ -174,7 +297,7 @@ class StockApiService {
       final headers = await AuthService.getAuthHeaders();
       final response = await http
           .get(Uri.parse('$baseUrl/products'), headers: headers)
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final List<dynamic> list = jsonDecode(response.body);
@@ -281,5 +404,52 @@ class StockApiService {
     } catch (e) {
       debugPrint('Update local cached product error: $e');
     }
+  }
+
+  /// 7. Mengambil Data Lengkap Monitoring Stok (API-v2 /stock-monitoring)
+  /// Mendukung filter ?month=YYYY-MM, ?date=YYYY-MM-DD, ?kdklp=KELOMPOK
+  static Future<Map<String, dynamic>> fetchStockMonitoring({
+    String? month,
+    String? date,
+    String? kdklp,
+    String? startDate,
+    String? endDate,
+  }) async {
+    final queryParams = <String, String>{};
+    if (month != null && month.isNotEmpty) queryParams['month'] = month;
+    if (date != null && date.isNotEmpty) queryParams['date'] = date;
+    if (kdklp != null && kdklp.isNotEmpty && kdklp.toUpperCase() != 'ALL') {
+      queryParams['kdklp'] = kdklp.toUpperCase();
+    }
+    if (startDate != null && startDate.isNotEmpty) queryParams['start_date'] = startDate;
+    if (endDate != null && endDate.isNotEmpty) queryParams['end_date'] = endDate;
+
+    final uri = ApiConfig.stockMonitoringUri.replace(
+      queryParameters: queryParams.isEmpty ? null : queryParams,
+    );
+    final headers = await AuthService.getAuthHeaders();
+    final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 6));
+
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+    }
+    throw Exception('Gagal memuat monitoring stok (${response.statusCode})');
+  }
+
+  /// 8. Khusus Admin: Sinkronisasi Ulang Seluruh Tabel Monitoring Stok dari Transaksi
+  static Future<Map<String, dynamic>> syncStockMonitoring() async {
+    final headers = await AuthService.getAuthHeaders();
+    final response = await http
+        .post(ApiConfig.stockMonitoringSyncUri, headers: headers)
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final decoded = jsonDecode(response.body);
+      return decoded is Map<String, dynamic> ? decoded : {'success': true};
+    }
+    throw Exception('Gagal sinkronisasi data monitoring (${response.statusCode})');
   }
 }

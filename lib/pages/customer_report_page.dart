@@ -24,6 +24,7 @@ class CustomerFinancialSummary {
   double totalOmzet = 0.0;
   double totalLunas = 0.0;
   double totalBon = 0.0;
+  double totalCicil = 0.0;
   final List<Transaction> transactions = [];
 
   CustomerFinancialSummary({
@@ -32,7 +33,8 @@ class CustomerFinancialSummary {
     this.telepon,
   });
 
-  bool get hasActiveBon => totalBon > 0;
+  double get sisaBon => (totalBon - totalCicil).clamp(0.0, totalBon);
+  bool get hasActiveBon => sisaBon > 0;
 }
 
 class CustomerReportPage extends StatefulWidget {
@@ -161,6 +163,15 @@ class _CustomerReportPageState extends State<CustomerReportPage>
         }
       }
 
+      // Sinkronkan data cicilan pembayaran sebagian jika ada
+      final allPayments = await PelunasanHistoryService.loadPaymentHistory();
+      for (final s in grouped.values) {
+        final custPayments = allPayments
+            .where((p) => p.customerName.trim().toLowerCase() == s.customerName.trim().toLowerCase())
+            .toList();
+        s.totalCicil = custPayments.fold(0.0, (sum, p) => sum + p.nominalBayar);
+      }
+
       final list = grouped.values.toList();
       for (final item in list) {
         item.transactions.sort((a, b) => b.date.compareTo(a.date));
@@ -208,7 +219,7 @@ class _CustomerReportPageState extends State<CustomerReportPage>
     results.sort((a, b) {
       switch (_sortBy) {
         case 'BON_DESC':
-          final cmp = b.totalBon.compareTo(a.totalBon);
+          final cmp = b.sisaBon.compareTo(a.sisaBon);
           if (cmp != 0) return cmp;
           return b.totalOmzet.compareTo(a.totalOmzet);
         case 'OMZET_DESC':
@@ -321,8 +332,10 @@ class _CustomerReportPageState extends State<CustomerReportPage>
                       Expanded(
                         child: _metricColumn(
                           'Sisa Piutang (BON)',
-                          _currencyFormat.format(summary.totalBon),
-                          '${summary.notaBon} Nota Belum Lunas',
+                          _currencyFormat.format(summary.sisaBon),
+                          summary.totalCicil > 0
+                              ? 'Dicicil: ${_currencyFormat.format(summary.totalCicil)}'
+                              : '${summary.notaBon} Nota Belum Lunas',
                           AppColors.error,
                         ),
                       ),

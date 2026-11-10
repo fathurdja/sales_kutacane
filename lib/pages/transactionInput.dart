@@ -301,16 +301,66 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     final now = DateTime.now();
     final formatter = DateFormat('yyyyMMdd');
     final datePart = formatter.format(now);
+    final prefix = 'Trx-$datePart-';
 
-    String newId;
-    bool exists = true;
+    int maxCounter = _transactionCounter;
 
-    do {
-      _transactionCounter++;
-      final uniqueNumber = _transactionCounter.toString().padLeft(4, '0');
-      newId = 'Trx-$datePart-$uniqueNumber';
-      exists = await _checkTransactionIdExists(newId);
-    } while (exists);
+    // 1. Cek dari transaksi antrean lokal HP
+    try {
+      final pending = await OfflineSyncService.getPendingTransactions();
+      for (final trx in pending) {
+        if (trx.id_transaksi.startsWith(prefix)) {
+          final suffix = trx.id_transaksi.replaceFirst(prefix, '');
+          final numVal = int.tryParse(suffix) ?? 0;
+          if (numVal > maxCounter) maxCounter = numVal;
+        }
+      }
+    } catch (_) {}
+
+    // 2. Cek transaksi tertinggi di Supabase untuk hari ini (1 query cepat)
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('transaksi')
+          .select('id_transaksi')
+          .like('id_transaksi', '$prefix%')
+          .order('id_transaksi', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (res != null && res['id_transaksi'] != null) {
+        final lastId = res['id_transaksi'].toString();
+        final suffix = lastId.replaceFirst(prefix, '');
+        final numVal = int.tryParse(suffix) ?? 0;
+        if (numVal > maxCounter) maxCounter = numVal;
+      }
+    } catch (_) {}
+
+    // 3. Cek ke server utama jika sedang aktif (timeout 1 detik agar tidak menggantung jika server mati)
+    try {
+      final apiUrl = '${ApiConfig.baseUrl}/transaksi';
+      final response = await http
+          .get(
+            Uri.parse('$apiUrl?search=$prefix'),
+            headers: {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 1));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        for (final item in data) {
+          final idStr = item['id_transaksi']?.toString() ?? '';
+          if (idStr.startsWith(prefix)) {
+            final suffix = idStr.replaceFirst(prefix, '');
+            final numVal = int.tryParse(suffix) ?? 0;
+            if (numVal > maxCounter) maxCounter = numVal;
+          }
+        }
+      }
+    } catch (_) {}
+
+    _transactionCounter = maxCounter + 1;
+    final uniqueNumber = _transactionCounter.toString().padLeft(4, '0');
+    final newId = '$prefix$uniqueNumber';
 
     if (!mounted) return;
     setState(() {
@@ -417,7 +467,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       'total': transaction.total.toInt(),
       'status': _paymentStatus,
       'is_backup': true,
-      'sales_name': user?.name,
+      'sales_name': user?.name ?? 'Admin',
     }, onConflict: 'id_transaksi');
 
     final itemsJson = transaction.items
@@ -425,7 +475,9 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
           (item) => {
             'id_transaksi': transaction.id_transaksi,
             'tyunit': _resolveTyunit(item),
-            'nama_barang': item.nameController.text,
+            'nama_barang': item.nameController.text.isNotEmpty
+                ? item.nameController.text
+                : (item.name.isNotEmpty ? item.name : (item.tyunit ?? 'Barang')),
             'harga': item.price.toInt(),
             'quantity': item.quantity,
             'bonus': item.bonus,
@@ -443,11 +495,28 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     final isEditing = widget.transaction != null;
     if (isEditing) {
       // MODE EDIT TRANSAKSI:
-      // Update data transaksi yang ada via PUT tanpa mengurangi kuota stok lagi
+      // Update data transaksi yang ada via PUT beserta items baru agar stok terhitung ulang di server
       final updateUrl = '${ApiConfig.baseUrl}/transaksi/${transaction.id_transaksi}';
       final formattedPelunasan = _paymentStatus == 'LUNAS'
           ? DateFormat('yyyy-MM-dd').format(DateTime.now())
           : null;
+
+      final itemsPayload = transaction.items.map((item) {
+        final tyunit = _resolveTyunit(item);
+        final price = item.price.truncateToDouble() == item.price
+            ? item.price.toInt()
+            : item.price;
+        final subtotal = item.subtotal.truncateToDouble() == item.subtotal
+            ? item.subtotal.toInt()
+            : item.subtotal;
+        return {
+          'tyunit': tyunit,
+          'price': price,
+          'quantity': item.quantity,
+          'bonus': item.bonus,
+          'subtotal': subtotal,
+        };
+      }).toList();
 
       final editPayload = {
         'status': _paymentStatus,
@@ -459,22 +528,51 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             : transaction.total,
         if (_paymentStatus == 'LUNAS')
           'tanggal_pelunasan': formattedPelunasan,
+        'items': itemsPayload,
       };
 
       try {
         final headers = await AuthService.getAuthHeaders();
-        await http.put(
+        final editResponse = await http.put(
           Uri.parse(updateUrl),
           headers: headers,
           body: jsonEncode(editPayload),
-        ).timeout(const Duration(seconds: 8));
+        ).timeout(const Duration(seconds: 5));
+
+        if (editResponse.statusCode == 200 || editResponse.statusCode == 201) {
+          debugPrint("Server berhasil memperbarui nota transaksi & stok secara otomatis.");
+        }
       } catch (e) {
         debugPrint("API edit PUT failed ($e).");
       }
 
-      // Sinkronkan juga ke Supabase
+      // Hitung selisih kuantitas per produk (tyunit) antara sebelum & sesudah edit
+      final Map<String, int> oldQtyMap = {};
+      if (widget.transaction != null) {
+        for (final oldItem in widget.transaction!.items) {
+          final tyunit = _resolveTyunit(oldItem);
+          oldQtyMap[tyunit] = (oldQtyMap[tyunit] ?? 0) + oldItem.quantity + oldItem.bonus;
+        }
+      }
+
+      final Map<String, int> newQtyMap = {};
+      for (final newItem in transaction.items) {
+        final tyunit = _resolveTyunit(newItem);
+        newQtyMap[tyunit] = (newQtyMap[tyunit] ?? 0) + newItem.quantity + newItem.bonus;
+      }
+
+      final Set<String> allUnits = {...oldQtyMap.keys, ...newQtyMap.keys};
+      final Map<String, int> deltas = {};
+      for (final u in allUnits) {
+        final oldQ = oldQtyMap[u] ?? 0;
+        final newQ = newQtyMap[u] ?? 0;
+        deltas[u] = newQ - oldQ; // positif = barang keluar bertambah (stok berkurang)
+      }
+
+      // Sinkronkan juga ke Supabase cadangan (header, items, dan stok munit)
       try {
         final supabase = Supabase.instance.client;
+        // 1. Update header transaksi di Supabase
         await supabase.from('transaksi').update({
           'status': _paymentStatus,
           'customer_name': transaction.customerName,
@@ -483,8 +581,100 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
           if (_paymentStatus == 'LUNAS')
             'tanggal_pelunasan': formattedPelunasan,
         }).eq('id_transaksi', transaction.id_transaksi);
+
+        // 2. Hapus transaksi_items lama lalu simpan transaksi_items baru di Supabase
+        await supabase
+            .from('transaksi_items')
+            .delete()
+            .eq('id_transaksi', transaction.id_transaksi);
+
+        final itemsJson = transaction.items
+            .map(
+              (item) => {
+                'id_transaksi': transaction.id_transaksi,
+                'tyunit': _resolveTyunit(item),
+                'nama_barang': item.nameController.text.isNotEmpty
+                    ? item.nameController.text
+                    : (item.name.isNotEmpty ? item.name : (item.tyunit ?? 'Barang')),
+                'harga': item.price.toInt(),
+                'quantity': item.quantity,
+                'bonus': item.bonus,
+                'subtotal': item.subtotal.toInt(),
+              },
+            )
+            .toList();
+
+        if (itemsJson.isNotEmpty) {
+          await supabase.from('transaksi_items').insert(itemsJson);
+        }
+
+        // 3. Update stok di Supabase munit berdasarkan delta
+        for (final entry in deltas.entries) {
+          final delta = entry.value;
+          if (delta != 0) {
+            try {
+              final munitRes = await supabase
+                  .from('munit')
+                  .select('stock, sisa_kuota, terjual')
+                  .eq('tyunit', entry.key)
+                  .maybeSingle();
+
+              if (munitRes != null) {
+                final curStock = (munitRes['stock'] as num?)?.toInt() ?? 0;
+                final curSisa = (munitRes['sisa_kuota'] as num?)?.toInt() ?? curStock;
+                final curTerjual = (munitRes['terjual'] as num?)?.toInt() ?? 0;
+
+                final newStock = (curStock - delta).clamp(0, 999999);
+                final newSisa = (curSisa - delta).clamp(0, 999999);
+                final newTerjual = (curTerjual + delta).clamp(0, 999999);
+
+                await supabase.from('munit').update({
+                  'stock': newStock,
+                  'sisa_kuota': newSisa,
+                  'terjual': newTerjual,
+                }).eq('tyunit', entry.key);
+              }
+            } catch (errMunit) {
+              debugPrint('Gagal update delta stok Supabase untuk ${entry.key}: $errMunit');
+            }
+          }
+        }
       } catch (errSupabase) {
         debugPrint("Supabase edit update error: $errSupabase");
+      }
+
+      // 4. Update selisih stok di cache lokal perangkat
+      try {
+        final cached = await OfflineSyncService.getCachedProducts();
+        bool changed = false;
+        for (final entry in deltas.entries) {
+          final delta = entry.value;
+          if (delta != 0) {
+            final idx = cached.indexWhere((p) => p.tyunit.toUpperCase() == entry.key.toUpperCase());
+            if (idx != -1) {
+              final p = cached[idx];
+              final newStk = (p.stock - delta).clamp(0, 999999);
+              final newSisa = (p.sisaKuota - delta).clamp(0, 999999);
+              final newTerjual = (p.terjual + delta).clamp(0, 999999);
+              cached[idx] = Item(
+                tyunit: p.tyunit,
+                name: p.name,
+                price: p.price,
+                stock: newStk,
+                kelompok: p.kelompok,
+                kuota: p.kuota,
+                terjual: newTerjual,
+                sisaKuota: newSisa,
+              );
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          await OfflineSyncService.cacheProducts(cached);
+        }
+      } catch (e) {
+        debugPrint("Gagal update local stock delta: $e");
       }
 
       // Kelola PelunasanHistoryService lokal
@@ -554,7 +744,7 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
             headers: headers,
             body: jsonEncode(payload),
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         transaction.isOffline = false;
@@ -588,8 +778,12 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
       // 2. Coba simpan ke server cadangan Supabase jika online
       try {
         await _saveToSupabase(transaction);
-        // Kurangi stok di Supabase munit agar sinkron untuk semua user
-        await SupabaseSyncService.decrementSupabaseStock(transaction.items);
+        // Kurangi stok di Supabase munit agar sinkron untuk semua user (dengan pelindung error)
+        try {
+          await SupabaseSyncService.decrementSupabaseStock(transaction.items);
+        } catch (decErr) {
+          debugPrint("Gagal decrement stock Supabase: $decErr");
+        }
         // Simpan juga ke antrean lokal HP sebagai cadangan ganda
         transaction.isOffline = true;
         await OfflineSyncService.saveOfflineTransaction(transaction);

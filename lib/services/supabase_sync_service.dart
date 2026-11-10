@@ -10,6 +10,7 @@ import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/models/transactionItem.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
+import 'package:kasir_kutacane/services/pending_stock_sync_service.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -305,10 +306,143 @@ class SupabaseSyncService {
     }
   }
 
+  /// Memperbarui kuota stok awal pada tabel munit di Supabase saat server utama offline
+  static Future<bool> setStockAwalToSupabase({
+    required String kelompok,
+    required int stockAwal,
+    bool resetTerjual = false,
+  }) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('munit')
+          .select('*')
+          .ilike('kdklp', kelompok.toUpperCase());
+
+      final List<Map<String, dynamic>> rows =
+          List<Map<String, dynamic>>.from(res as List);
+
+      if (rows.isEmpty) {
+        debugPrint('setStockAwalToSupabase: tidak ada baris ditemukan untuk kdklp=$kelompok');
+        return false;
+      }
+
+      final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+      final List<Map<String, dynamic>> updates = [];
+
+      for (final row in rows) {
+        final currentTerjual = (row['terjual'] is num)
+            ? (row['terjual'] as num).toInt()
+            : (int.tryParse(row['terjual']?.toString() ?? '0') ?? 0);
+
+        final newTerjual = resetTerjual ? 0 : currentTerjual;
+        final newSisa = (stockAwal - newTerjual).clamp(0, 999999);
+
+        updates.add({
+          'tyunit': row['tyunit'],
+          'ntyunit': row['ntyunit'],
+          'hjual': row['hjual'],
+          'stock': newSisa,
+          'kdklp': row['kdklp'],
+          'kuota': stockAwal,
+          'terjual': newTerjual,
+          'sisa_kuota': newSisa,
+          'userup': AuthService.currentUser?.username ?? 'admin_offline',
+          'tglup': todayStr,
+        });
+      }
+
+      if (updates.isNotEmpty) {
+        await supabase.from('munit').upsert(updates);
+        debugPrint('Berhasil update stok awal $kelompok = $stockAwal ke Supabase munit (${updates.length} produk).');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Gagal setStockAwalToSupabase: $e');
+      return false;
+    }
+  }
+
+  /// Menambah pasokan stok masuk pada tabel munit di Supabase saat server utama offline
+  static Future<bool> addStockMasukToSupabase({
+    required String kelompok,
+    required int tambahanQty,
+    String? keterangan,
+  }) async {
+    try {
+      final supabase = Supabase.instance.client;
+      final res = await supabase
+          .from('munit')
+          .select('*')
+          .ilike('kdklp', kelompok.toUpperCase());
+
+      final List<Map<String, dynamic>> rows =
+          List<Map<String, dynamic>>.from(res as List);
+
+      if (rows.isEmpty) {
+        debugPrint('addStockMasukToSupabase: tidak ada baris ditemukan untuk kdklp=$kelompok');
+        return false;
+      }
+
+      final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+      final List<Map<String, dynamic>> updates = [];
+
+      for (final row in rows) {
+        final currentKuota = (row['kuota'] is num)
+            ? (row['kuota'] as num).toInt()
+            : (int.tryParse(row['kuota']?.toString() ?? '0') ?? 0);
+        final currentSisa = (row['sisa_kuota'] is num)
+            ? (row['sisa_kuota'] as num).toInt()
+            : (int.tryParse(row['sisa_kuota']?.toString() ?? '0') ?? 0);
+        final currentStock = (row['stock'] is num)
+            ? (row['stock'] as num).toInt()
+            : (int.tryParse(row['stock']?.toString() ?? '0') ?? 0);
+        final currentTerjual = (row['terjual'] is num)
+            ? (row['terjual'] as num).toInt()
+            : (int.tryParse(row['terjual']?.toString() ?? '0') ?? 0);
+
+        final newKuota = currentKuota + tambahanQty;
+        final newSisa = (currentSisa > 0 ? currentSisa : currentStock) + tambahanQty;
+
+        updates.add({
+          'tyunit': row['tyunit'],
+          'ntyunit': row['ntyunit'],
+          'hjual': row['hjual'],
+          'stock': newSisa,
+          'kdklp': row['kdklp'],
+          'kuota': newKuota,
+          'terjual': currentTerjual,
+          'sisa_kuota': newSisa,
+          'userup': AuthService.currentUser?.username ?? 'admin_offline',
+          'tglup': todayStr,
+        });
+      }
+
+      if (updates.isNotEmpty) {
+        await supabase.from('munit').upsert(updates);
+        debugPrint('Berhasil tambah pasokan $kelompok (+$tambahanQty) ke Supabase munit (${updates.length} produk).');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Gagal addStockMasukToSupabase: $e');
+      return false;
+    }
+  }
+
   /// Sinkronisasi otomatis transaksi yang tercatat di Supabase ke Server Utama (Laravel)
   /// dan membersihkan buffer transaksi (transaksi & transaksi_items) di Supabase setelah data cocok.
   /// PENTING: Data master stok (munit) TIDAK PERNAH DIHAPUS.
   static Future<void> syncSupabaseTransactionsToServer() async {
+    // 1. Sinkronkan antrean penambahan / perubahan stok offline (TAMBAH_PASOKAN / SET_STOK_AWAL)
+    try {
+      await PendingStockSyncService.syncPendingStockEntries();
+    } catch (e) {
+      debugPrint('Sync pending stock entries error: $e');
+    }
+
+    // 2. Sinkronkan buffer transaksi
     try {
       final supabase = Supabase.instance.client;
       final trxList = await supabase.from('transaksi').select('*');

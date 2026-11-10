@@ -104,7 +104,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       for (final t in loaded) {
         if (historyMap.containsKey(t.id_transaksi)) {
           final rec = historyMap[t.id_transaksi]!;
-          t.status = 'LUNAS';
+          t.status = 'BON LUNAS';
           t.tanggalPelunasan = rec.tanggalPelunasan;
         } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
           t.tanggalPelunasan = t.date;
@@ -143,7 +143,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         for (final t in loaded) {
           if (historyMap.containsKey(t.id_transaksi)) {
             final rec = historyMap[t.id_transaksi]!;
-            t.status = 'LUNAS';
+            t.status = 'BON LUNAS';
             t.tanggalPelunasan = rec.tanggalPelunasan;
           } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
             t.tanggalPelunasan = t.date;
@@ -234,6 +234,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   List<Transaction> get _lunasTransactions =>
       _filteredTransactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
 
+  List<Transaction> get _bonLunasTransactions =>
+      _filteredTransactions.where((t) => t.isBonLunas).toList();
+
   List<Transaction> get _qrisTransactions =>
       _filteredTransactions.where((t) => t.status.toUpperCase() == 'QRIS').toList();
 
@@ -246,6 +249,9 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
   double get _omzetLunas =>
       _lunasTransactions.fold(0.0, (sum, trx) => sum + trx.total);
+
+  double get _omzetBonLunas =>
+      _bonLunasTransactions.fold(0.0, (sum, trx) => sum + trx.total);
 
   double get _omzetQris =>
       _qrisTransactions.fold(0.0, (sum, trx) => sum + trx.total);
@@ -262,6 +268,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
   List<Transaction> get _displayedTransactions {
     if (_statusFilter == 'LUNAS') {
       return _lunasTransactions;
+    } else if (_statusFilter == 'BON_LUNAS') {
+      return _bonLunasTransactions;
     } else if (_statusFilter == 'QRIS') {
       return _qrisTransactions;
     } else if (_statusFilter == 'BON') {
@@ -281,9 +289,11 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
     final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
 
     final lunasList = transactions.where((t) => t.status.toUpperCase() == 'LUNAS').toList();
+    final bonLunasList = transactions.where((t) => t.isBonLunas).toList();
     final qrisList = transactions.where((t) => t.status.toUpperCase() == 'QRIS').toList();
     final bonList = transactions.where((t) => t.status.toUpperCase() == 'BON').toList();
     final totalLunas = lunasList.fold(0.0, (sum, trx) => sum + trx.total);
+    final totalBonLunas = bonLunasList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalQris = qrisList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalBon = bonList.fold(0.0, (sum, trx) => sum + trx.total);
     final totalDaily = transactions.fold(0.0, (sum, trx) => sum + trx.total);
@@ -313,7 +323,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
         },
         build: (context) {
           return [
-            // KOTAK RINGKASAN OMZET LUNAS, QRIS & PIUTANG BON
+            // KOTAK RINGKASAN OMZET LUNAS, BON LUNAS, QRIS & PIUTANG BON
             pw.Container(
               margin: const pw.EdgeInsets.only(bottom: 14),
               padding: const pw.EdgeInsets.all(10),
@@ -335,6 +345,14 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                     children: [
                       pw.Text("• Omzet Lunas (Tunai) [${lunasList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.green900)),
                       pw.Text(currencyFormat.format(totalLunas), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.green900)),
+                    ],
+                  ),
+                  pw.SizedBox(height: 3),
+                  pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text("• Pelunasan Bon (BON LUNAS) [${bonLunasList.length} Nota]:", style: const pw.TextStyle(fontSize: 10, color: PdfColors.teal900)),
+                      pw.Text(currencyFormat.format(totalBonLunas), style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold, color: PdfColors.teal900)),
                     ],
                   ),
                   pw.SizedBox(height: 3),
@@ -515,6 +533,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       buffer.writeln("");
       buffer.writeln("RINGKASAN OMZET & PIUTANG,,,,,,,,,");
       buffer.writeln("TOTAL OMZET LUNAS,,,,,$_omzetLunas,(${_lunasTransactions.length} Nota Lunas)");
+      buffer.writeln("TOTAL PELUNASAN BON (BON LUNAS),,,,,$_omzetBonLunas,(${_bonLunasTransactions.length} Nota Bon Lunas)");
       buffer.writeln("TOTAL OMZET QRIS,,,,,$_omzetQris,(${_qrisTransactions.length} Nota QRIS)");
       buffer.writeln("TOTAL PIUTANG BON (TANGGAL INI),,,,,$_omzetBon,(${_bonTransactions.length} Nota Bon)");
       buffer.writeln("TOTAL PIUTANG BON BERJALAN (MONITORING BON),,,,,$_totalPiutangBonBerjalan,(${_allActiveBonTransactions.length} Nota Bon Aktif)");
@@ -949,8 +968,8 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
               const SizedBox(height: 4),
               Text(
                 _isAdmin
-                    ? 'Lunas: ${_lunasTransactions.length} Nota (${currencyFormat.format(_omzetLunas)}) • QRIS: ${_qrisTransactions.length} Nota (${currencyFormat.format(_omzetQris)}) • Bon: ${_bonTransactions.length} Nota (${currencyFormat.format(_omzetBon)})'
-                    : 'Lunas: ${_lunasTransactions.length} Nota • QRIS: ${_qrisTransactions.length} Nota • Bon: ${_bonTransactions.length} Nota',
+                    ? 'Lunas: ${_lunasTransactions.length} (${currencyFormat.format(_omzetLunas)}) • Bon Lunas: ${_bonLunasTransactions.length} (${currencyFormat.format(_omzetBonLunas)}) • QRIS: ${_qrisTransactions.length} • Bon: ${_bonTransactions.length}'
+                    : 'Lunas: ${_lunasTransactions.length} • Bon Lunas: ${_bonLunasTransactions.length} • QRIS: ${_qrisTransactions.length} • Bon: ${_bonTransactions.length}',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.85),
                   fontSize: 11.5,
@@ -978,7 +997,21 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                 onTap: () => setState(() => _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS'),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 6),
+            // KARTU BON LUNAS (PELUNASAN)
+            Expanded(
+              child: _buildBreakdownItemCard(
+                title: 'Bon Lunas',
+                countText: '${_bonLunasTransactions.length} Nota',
+                amountText: _isAdmin ? currencyFormat.format(_omzetBonLunas) : null,
+                icon: Icons.task_alt_rounded,
+                color: const Color(0xFF0CA678),
+                bgColor: const Color(0xFFE6FCF5),
+                isSelected: _statusFilter == 'BON_LUNAS',
+                onTap: () => setState(() => _statusFilter = _statusFilter == 'BON_LUNAS' ? 'SEMUA' : 'BON_LUNAS'),
+              ),
+            ),
+            const SizedBox(width: 6),
             // KARTU QRIS
             Expanded(
               child: _buildBreakdownItemCard(
@@ -992,7 +1025,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
                 onTap: () => setState(() => _statusFilter = _statusFilter == 'QRIS' ? 'SEMUA' : 'QRIS'),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 6),
             // KARTU BON
             Expanded(
               child: _buildBreakdownItemCard(
@@ -1261,6 +1294,18 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
             selectedColor: AppColors.lunas,
             labelStyle: TextStyle(
               color: _statusFilter == 'LUNAS' ? Colors.white : AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: 11.5,
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilterChip(
+            label: Text('Bon Lunas (${_bonLunasTransactions.length})'),
+            selected: _statusFilter == 'BON_LUNAS',
+            onSelected: (_) => setState(() => _statusFilter = 'BON_LUNAS'),
+            selectedColor: const Color(0xFF0CA678),
+            labelStyle: TextStyle(
+              color: _statusFilter == 'BON_LUNAS' ? Colors.white : AppColors.textPrimary,
               fontWeight: FontWeight.w600,
               fontSize: 11.5,
             ),

@@ -18,6 +18,11 @@ class ApiConfig {
   static Uri get stockSummaryUri => Uri.parse('$baseUrl/stock-summary');
   static Uri get stockGroupsUri => Uri.parse('$baseUrl/stock-groups');
   static Uri get updateStockUri => Uri.parse('$baseUrl/update-stock');
+  static Uri get stockMonitoringUri => Uri.parse('$baseUrl/stock-monitoring');
+  static Uri get stockMonitoringDailyUri => Uri.parse('$baseUrl/stock-monitoring/daily');
+  static Uri get stockMonitoringMonthlyUri => Uri.parse('$baseUrl/stock-monitoring/monthly');
+  static Uri get stockMasukUri => Uri.parse('$baseUrl/stock-masuk');
+  static Uri get stockMonitoringSyncUri => Uri.parse('$baseUrl/stock-monitoring/sync');
 
   // Transaksi endpoints
   static Uri get transaksiUri => Uri.parse('$baseUrl/transaksi');

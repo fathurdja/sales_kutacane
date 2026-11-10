@@ -115,7 +115,9 @@ class TestPrint {
 
       // ====== PEMBAYARAN & TOTAL ======
       final String statusBayarText;
-      if (isLunas) {
+      if (statusUpper == 'BON LUNAS' || statusUpper == 'BON_LUNAS') {
+        statusBayarText = "BON LUNAS";
+      } else if (isLunas) {
         statusBayarText = "LUNAS";
       } else if (isQris) {
         statusBayarText = "QRIS";
@@ -127,7 +129,7 @@ class TestPrint {
         statusBayarText,
         Size.boldMedium.val,
       );
-      if (isLunas && transaction.tanggalPelunasan != null) {
+      if ((isLunas || statusUpper.contains('LUNAS')) && transaction.tanggalPelunasan != null) {
         await bluetooth.printLeftRight(
           "Tgl Pelunasan",
           DateFormat('dd-MM-yyyy').format(transaction.tanggalPelunasan!),
@@ -165,6 +167,101 @@ class TestPrint {
       await bluetooth.printNewLine();
 
       // Coba potong kertas jika printer mendukung
+      try {
+        await bluetooth.paperCut();
+      } catch (_) {}
+
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Mencetak bukti pembayaran / pelunasan bon (baik sebagian maupun lunas)
+  Future<bool> printPelunasanPayment({
+    required String customerName,
+    String? idTransaksi,
+    required double totalBonAwal,
+    required double nominalBayar,
+    required double sisaBon,
+    required DateTime tanggalPelunasan,
+    String? catatan,
+    bool isLunas = false,
+  }) async {
+    final currencyFormat = NumberFormat.currency(
+      locale: 'id_ID',
+      symbol: 'Rp ',
+      decimalDigits: 0,
+    );
+
+    try {
+      final isConnected = await bluetooth.isConnected ?? false;
+      if (!isConnected) return false;
+
+      await bluetooth.printNewLine();
+
+      // HEADER
+      await bluetooth.printCustom("Kencana Cahaya Amanah", Size.boldLarge.val, Align.center.val);
+      await bluetooth.printCustom("JL. Kenangan No. 183 Gorontalo", Size.medium.val, Align.center.val);
+      await bluetooth.printCustom("--------------------------------", Size.medium.val, Align.center.val);
+
+      // JUDUL
+      await bluetooth.printCustom(
+        isLunas ? "BUKTI PELUNASAN BON" : "BUKTI PEMBAYARAN BON",
+        Size.boldMedium.val,
+        Align.center.val,
+      );
+      await bluetooth.printCustom("--------------------------------", Size.medium.val, Align.center.val);
+
+      // INFO PELUNASAN
+      await bluetooth.printLeftRight(
+        "Tgl Pelunasan",
+        DateFormat('dd-MM-yyyy').format(tanggalPelunasan),
+        Size.medium.val,
+      );
+      await bluetooth.printLeftRight(
+        "Pelanggan",
+        customerName,
+        Size.medium.val,
+      );
+      if (idTransaksi != null && idTransaksi.isNotEmpty) {
+        await bluetooth.printLeftRight("No. Nota", idTransaksi, Size.medium.val);
+      }
+
+      await bluetooth.printCustom("--------------------------------", Size.medium.val, Align.center.val);
+
+      // RINCIAN NOMINAL
+      await bluetooth.printLeftRight("Total Tagihan", currencyFormat.format(totalBonAwal), Size.medium.val);
+      await bluetooth.printLeftRight("Jumlah Dibayar", currencyFormat.format(nominalBayar), Size.bold.val);
+      await bluetooth.printLeftRight(
+        "Sisa Tagihan",
+        currencyFormat.format(sisaBon),
+        isLunas ? Size.medium.val : Size.bold.val,
+      );
+
+      await bluetooth.printCustom("--------------------------------", Size.medium.val, Align.center.val);
+
+      // STATUS
+      await bluetooth.printCustom("STATUS PEMBAYARAN", Size.medium.val, Align.center.val);
+      await bluetooth.printCustom(
+        isLunas ? "LUNAS (SELESAI)" : "BELUM LUNAS (SEBAGIAN)",
+        Size.boldLarge.val,
+        Align.center.val,
+      );
+
+      if (catatan != null && catatan.isNotEmpty) {
+        await bluetooth.printCustom("Ket: $catatan", Size.medium.val, Align.center.val);
+      }
+
+      await bluetooth.printCustom("--------------------------------", Size.medium.val, Align.center.val);
+      await bluetooth.printCustom("Terima Kasih atas Pembayaran Anda!", Size.medium.val, Align.center.val);
+      await bluetooth.printCustom("Simpan struk ini sbg bukti sah", Size.medium.val, Align.center.val);
+
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
+
       try {
         await bluetooth.paperCut();
       } catch (_) {}

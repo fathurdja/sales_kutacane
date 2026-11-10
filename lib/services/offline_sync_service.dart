@@ -7,6 +7,7 @@ import 'package:kasir_kutacane/config/api_config.dart';
 import 'package:kasir_kutacane/models/Item.dart';
 import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
+import 'package:kasir_kutacane/services/pending_stock_sync_service.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:path_provider/path_provider.dart';
@@ -376,6 +377,13 @@ class OfflineSyncService {
       debugPrint('Sync Supabase transactions error: $e');
     }
 
+    // Sinkronkan antrean perubahan stok offline (TAMBAH_PASOKAN & SET_STOK_AWAL) ke server utama
+    try {
+      await PendingStockSyncService.syncPendingStockEntries();
+    } catch (e) {
+      debugPrint('Sync pending stock entries error: $e');
+    }
+
     // Jika ada yang berhasil disinkronkan, update data stok dari server agar stok di memori/cache cocok kembali
     if (successCount > 0) {
       try {
@@ -439,6 +447,38 @@ class OfflineSyncService {
       await cacheProducts(updated);
     } catch (e) {
       debugPrint('Error updating cached product: $e');
+    }
+  }
+
+  /// Memperbarui kuota dan sisa stok seluruh produk dalam satu kelompok di cache lokal HP
+  static Future<void> updateCachedGroupStock(
+    String kelompok,
+    int newStockAwal,
+    int newSisaStock, {
+    bool resetTerjual = false,
+  }) async {
+    try {
+      final cached = await getCachedProducts();
+      final updated = cached.map((p) {
+        if (p.kelompok.toUpperCase() == kelompok.toUpperCase()) {
+          final terjual = resetTerjual ? 0 : p.terjual;
+          return Item(
+            tyunit: p.tyunit,
+            name: p.name,
+            price: p.price,
+            stock: newSisaStock,
+            kelompok: p.kelompok,
+            kuota: newStockAwal,
+            terjual: terjual,
+            sisaKuota: newSisaStock,
+          );
+        }
+        return p;
+      }).toList();
+      await cacheProducts(updated);
+      debugPrint('Berhasil update cache lokal stok kelompok $kelompok (awal=$newStockAwal, sisa=$newSisaStock).');
+    } catch (e) {
+      debugPrint('Error updateCachedGroupStock: $e');
     }
   }
 
