@@ -249,9 +249,26 @@ class PelunasanHistoryService {
       debugPrint('Error reading pelunasan_payments.json: $e');
     }
 
+    // Deduplikasi cerdas: jika ada catatan ganda antara record induk (idTransaksi == null)
+    // dan record alokasi per-nota (idTransaksi != null) yang dibuat pada waktu bersamaan
+    final List<PelunasanPayment> cleaned = [];
+    for (final p in list) {
+      if (p.idTransaksi == null) {
+        final hasChildDuplicate = list.any((other) =>
+            other.idTransaksi != null &&
+            other.customerName.trim().toLowerCase() == p.customerName.trim().toLowerCase() &&
+            (other.nominalBayar - p.nominalBayar).abs() < 0.01 &&
+            other.settledAt.difference(p.settledAt).inSeconds.abs() <= 10);
+        if (hasChildDuplicate) {
+          continue; // Lewati duplikat induk
+        }
+      }
+      cleaned.add(p);
+    }
+
     // Urutkan dari pembayaran terbaru
-    list.sort((a, b) => b.tanggalPelunasan.compareTo(a.tanggalPelunasan));
-    return list;
+    cleaned.sort((a, b) => b.tanggalPelunasan.compareTo(a.tanggalPelunasan));
+    return cleaned;
   }
 
   /// Mencatat pembayaran (sebagian atau penuh) untuk pelanggan atau nota

@@ -981,65 +981,77 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
         const SizedBox(height: 10),
 
-        // 2. KARTU RINCIAN 3-PILIHAN: LUNAS (TUNAI), QRIS, & PIUTANG BON
-        Row(
-          children: [
-            // KARTU LUNAS (TUNAI)
-            Expanded(
-              child: _buildBreakdownItemCard(
-                title: 'Lunas',
-                countText: '${_lunasTransactions.length} Nota',
-                amountText: _isAdmin ? currencyFormat.format(_omzetLunas) : null,
-                icon: Icons.check_circle_outline,
-                color: AppColors.lunas,
-                bgColor: AppColors.lunasBg,
-                isSelected: _statusFilter == 'LUNAS',
-                onTap: () => setState(() => _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS'),
+        // 2. KARTU RINCIAN TIPE TRANSAKSI (2x2 GRID SIMETRIS & SERAGAM)
+        IntrinsicHeight(
+          child: Row(
+            children: [
+              // KARTU LUNAS (TUNAI)
+              Expanded(
+                child: _buildBreakdownItemCard(
+                  title: 'Lunas',
+                  subtitle: 'Tunai Langsung',
+                  countText: '${_lunasTransactions.length} Nota',
+                  amountText: _isAdmin ? currencyFormat.format(_omzetLunas) : null,
+                  icon: Icons.check_circle_outline,
+                  color: AppColors.lunas,
+                  bgColor: AppColors.lunasBg,
+                  isSelected: _statusFilter == 'LUNAS',
+                  onTap: () => setState(() => _statusFilter = _statusFilter == 'LUNAS' ? 'SEMUA' : 'LUNAS'),
+                ),
               ),
-            ),
-            const SizedBox(width: 6),
-            // KARTU BON LUNAS (PELUNASAN)
-            Expanded(
-              child: _buildBreakdownItemCard(
-                title: 'Bon Lunas',
-                countText: '${_bonLunasTransactions.length} Nota',
-                amountText: _isAdmin ? currencyFormat.format(_omzetBonLunas) : null,
-                icon: Icons.task_alt_rounded,
-                color: const Color(0xFF0CA678),
-                bgColor: const Color(0xFFE6FCF5),
-                isSelected: _statusFilter == 'BON_LUNAS',
-                onTap: () => setState(() => _statusFilter = _statusFilter == 'BON_LUNAS' ? 'SEMUA' : 'BON_LUNAS'),
+              const SizedBox(width: 8),
+              // KARTU BON LUNAS (PELUNASAN)
+              Expanded(
+                child: _buildBreakdownItemCard(
+                  title: 'Bon Lunas',
+                  subtitle: 'Pelunasan Piutang',
+                  countText: '${_bonLunasTransactions.length} Nota',
+                  amountText: _isAdmin ? currencyFormat.format(_omzetBonLunas) : null,
+                  icon: Icons.task_alt_rounded,
+                  color: const Color(0xFF0CA678),
+                  bgColor: const Color(0xFFE6FCF5),
+                  isSelected: _statusFilter == 'BON_LUNAS',
+                  onTap: () => setState(() => _statusFilter = _statusFilter == 'BON_LUNAS' ? 'SEMUA' : 'BON_LUNAS'),
+                ),
               ),
-            ),
-            const SizedBox(width: 6),
-            // KARTU QRIS
-            Expanded(
-              child: _buildBreakdownItemCard(
-                title: 'QRIS',
-                countText: '${_qrisTransactions.length} Nota',
-                amountText: _isAdmin ? currencyFormat.format(_omzetQris) : null,
-                icon: Icons.qr_code_2_rounded,
-                color: AppColors.qris,
-                bgColor: AppColors.qrisBg,
-                isSelected: _statusFilter == 'QRIS',
-                onTap: () => setState(() => _statusFilter = _statusFilter == 'QRIS' ? 'SEMUA' : 'QRIS'),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        IntrinsicHeight(
+          child: Row(
+            children: [
+              // KARTU QRIS (NON-TUNAI)
+              Expanded(
+                child: _buildBreakdownItemCard(
+                  title: 'QRIS',
+                  subtitle: 'Digital / Non-Tunai',
+                  countText: '${_qrisTransactions.length} Nota',
+                  amountText: _isAdmin ? currencyFormat.format(_omzetQris) : null,
+                  icon: Icons.qr_code_2_rounded,
+                  color: AppColors.qris,
+                  bgColor: AppColors.qrisBg,
+                  isSelected: _statusFilter == 'QRIS',
+                  onTap: () => setState(() => _statusFilter = _statusFilter == 'QRIS' ? 'SEMUA' : 'QRIS'),
+                ),
               ),
-            ),
-            const SizedBox(width: 6),
-            // KARTU BON
-            Expanded(
-              child: _buildBreakdownItemCard(
-                title: 'Bon',
-                countText: '${_bonTransactions.length} Nota',
-                amountText: _isAdmin ? currencyFormat.format(_omzetBon) : null,
-                icon: Icons.pending_actions_rounded,
-                color: AppColors.bon,
-                bgColor: AppColors.bonBg,
-                isSelected: _statusFilter == 'BON',
-                onTap: () => setState(() => _statusFilter = _statusFilter == 'BON' ? 'SEMUA' : 'BON'),
+              const SizedBox(width: 8),
+              // KARTU BON (PIUTANG)
+              Expanded(
+                child: _buildBreakdownItemCard(
+                  title: 'Bon',
+                  subtitle: 'Piutang Berjalan',
+                  countText: '${_bonTransactions.length} Nota',
+                  amountText: _isAdmin ? currencyFormat.format(_omzetBon) : null,
+                  icon: Icons.pending_actions_rounded,
+                  color: AppColors.bon,
+                  bgColor: AppColors.bonBg,
+                  isSelected: _statusFilter == 'BON',
+                  onTap: () => setState(() => _statusFilter = _statusFilter == 'BON' ? 'SEMUA' : 'BON'),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
 
         // 3. KARTU MONITORING BON / TOTAL PIUTANG BON BERJALAN (KHUSUS ADMIN)
@@ -1180,6 +1192,7 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
 
   Widget _buildBreakdownItemCard({
     required String title,
+    required String subtitle,
     required String countText,
     String? amountText,
     required IconData icon,
@@ -1192,78 +1205,95 @@ class _DailyReportDetailPageState extends State<DailyReportDetailPage> {
       onTap: onTap,
       borderRadius: BorderRadius.circular(AppRadius.card),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 10),
         decoration: BoxDecoration(
-          color: isSelected ? color.withOpacity(0.18) : bgColor,
+          color: isSelected ? color.withValues(alpha: 0.16) : bgColor,
           borderRadius: BorderRadius.circular(AppRadius.card),
           border: Border.all(
-            color: isSelected ? color : color.withOpacity(0.35),
+            color: isSelected ? color : color.withValues(alpha: 0.35),
             width: isSelected ? 2 : 1,
           ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: color.withValues(alpha: 0.15),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: color,
+                Container(
+                  padding: const EdgeInsets.all(4.5),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(icon, size: 13, color: color),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: color,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Icon(icon, size: 15, color: color),
+                const SizedBox(width: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(100),
+                  ),
+                  child: Text(
+                    countText,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: color,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
-            const SizedBox(height: 6),
-            if (amountText != null && amountText.isNotEmpty) ...[
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  amountText,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w900,
-                    color: color,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                countText,
-                style: const TextStyle(
-                  fontSize: 10.5,
-                  color: AppColors.textSecondary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ] else ...[
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  countText,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    color: color,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 2),
-              const Text(
-                'Nota Terbuat',
+            const SizedBox(height: 8),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                amountText ?? countText,
                 style: TextStyle(
-                  fontSize: 10.5,
-                  color: AppColors.textSecondary,
-                  fontWeight: FontWeight.w500,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                  color: color,
                 ),
               ),
-            ],
+            ),
+            const SizedBox(height: 1),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                fontSize: 10,
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ],
         ),
       ),

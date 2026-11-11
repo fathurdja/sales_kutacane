@@ -536,6 +536,24 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
           }
         }
       }
+
+      // Hitung ulang totalTransaksi unik per kelompok dari daftar transaksi aktual jika tersedia
+      if (transactions.isNotEmpty) {
+        for (final k in map.keys) {
+          final matching = transactions.where(
+            (t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == k),
+          ).toList();
+          if (matching.isNotEmpty) {
+            map[k]!.totalTransaksi = matching.length;
+            final double nom = matching.fold<double>(0.0, (sum, t) {
+              return sum + t.items.where((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == k).fold<double>(0.0, (iSum, it) => iSum + it.subtotal);
+            });
+            if (nom > 0) {
+              map[k]!.totalNominal = nom;
+            }
+          }
+        }
+      }
       return map;
     }
 
@@ -583,10 +601,16 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
         if (map.containsKey(k)) {
           final qtyOut = item.quantity + item.bonus;
           map[k]!.keluar += qtyOut;
-          map[k]!.totalTransaksi += 1;
           map[k]!.totalNominal += item.subtotal;
         }
       }
+    }
+
+    // Hitung jumlah nota transaksi unik per kelompok (tanpa duplikasi antar item di transaksi yang sama)
+    for (final k in map.keys) {
+      map[k]!.totalTransaksi = transactions.where(
+        (t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == k),
+      ).length;
     }
 
     for (final s in map.values) {
@@ -1295,18 +1319,25 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     int totalSisaKemarin = 0;
     int totalMasukHariIni = 0;
     int totalKeluar = 0;
-    int totalTrx = 0;
-    double totalNominal = 0;
 
     for (final s in summaries.values) {
       if (_selectedKelompok == 'ALL' || s.kelompok == _selectedKelompok) {
         totalSisaKemarin += s.sisaKemarin;
         totalMasukHariIni += s.masukHariIni;
         totalKeluar += s.keluar;
-        totalTrx += s.totalTransaksi;
-        totalNominal += s.totalNominal;
       }
     }
+
+    // Hitung total nota transaksi unik agar cocok 1:1 dengan Laporan Harian (bukan akumulasi per kelompok yang menimbulkan duplikasi)
+    final matchingTrx = _selectedKelompok == 'ALL'
+        ? _dailyTransactions
+        : _dailyTransactions.where((t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok)).toList();
+    final int totalTrx = matchingTrx.length;
+    final double totalNominal = _selectedKelompok == 'ALL'
+        ? matchingTrx.fold<double>(0.0, (sum, t) => sum + t.total)
+        : matchingTrx.fold<double>(0.0, (sum, t) {
+            return sum + t.items.where((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok).fold<double>(0.0, (iSum, it) => iSum + it.subtotal);
+          });
 
     final int selisihHariIni = totalMasukHariIni - totalKeluar;
     final int sisaAkumulasi = totalSisaKemarin + totalMasukHariIni - totalKeluar;
@@ -1440,18 +1471,24 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     int totalSisaKemarin = 0;
     int totalMasukMingguIni = 0;
     int totalKeluar = 0;
-    int totalTrx = 0;
-    double totalNominal = 0;
 
     for (final s in summaries.values) {
       if (_selectedKelompok == 'ALL' || s.kelompok == _selectedKelompok) {
         totalSisaKemarin += s.sisaKemarin;
         totalMasukMingguIni += s.masukHariIni;
         totalKeluar += s.keluar;
-        totalTrx += s.totalTransaksi;
-        totalNominal += s.totalNominal;
       }
     }
+
+    final matchingWeeklyTrx = _selectedKelompok == 'ALL'
+        ? _weeklyTransactions
+        : _weeklyTransactions.where((t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok)).toList();
+    final int totalTrx = matchingWeeklyTrx.length;
+    final double totalNominal = _selectedKelompok == 'ALL'
+        ? matchingWeeklyTrx.fold<double>(0.0, (sum, t) => sum + t.total)
+        : matchingWeeklyTrx.fold<double>(0.0, (sum, t) {
+            return sum + t.items.where((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok).fold<double>(0.0, (iSum, it) => iSum + it.subtotal);
+          });
 
     final int selisihMingguIni = totalMasukMingguIni - totalKeluar;
     final int sisaAkumulasi = totalSisaKemarin + totalMasukMingguIni - totalKeluar;
@@ -1524,18 +1561,24 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     int totalSisaKemarin = 0;
     int totalMasukBulanIni = 0;
     int totalKeluar = 0;
-    int totalTrx = 0;
-    double totalNominal = 0;
 
     for (final s in summaries.values) {
       if (_selectedKelompok == 'ALL' || s.kelompok == _selectedKelompok) {
         totalSisaKemarin += s.sisaKemarin;
         totalMasukBulanIni += s.masukHariIni;
         totalKeluar += s.keluar;
-        totalTrx += s.totalTransaksi;
-        totalNominal += s.totalNominal;
       }
     }
+
+    final matchingMonthlyTrx = _selectedKelompok == 'ALL'
+        ? _monthlyTransactions
+        : _monthlyTransactions.where((t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok)).toList();
+    final int totalTrx = matchingMonthlyTrx.length;
+    final double totalNominal = _selectedKelompok == 'ALL'
+        ? matchingMonthlyTrx.fold<double>(0.0, (sum, t) => sum + t.total)
+        : matchingMonthlyTrx.fold<double>(0.0, (sum, t) {
+            return sum + t.items.where((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok).fold<double>(0.0, (iSum, it) => iSum + it.subtotal);
+          });
 
     final int selisihBulanIni = totalMasukBulanIni - totalKeluar;
     final int sisaAkumulasi = totalSisaKemarin + totalMasukBulanIni - totalKeluar;
@@ -1608,18 +1651,24 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     int totalSisaKemarin = 0;
     int totalMasukPeriode = 0;
     int totalKeluar = 0;
-    int totalTrx = 0;
-    double totalNominal = 0;
 
     for (final s in summaries.values) {
       if (_selectedKelompok == 'ALL' || s.kelompok == _selectedKelompok) {
         totalSisaKemarin += s.sisaKemarin;
         totalMasukPeriode += s.masukHariIni;
         totalKeluar += s.keluar;
-        totalTrx += s.totalTransaksi;
-        totalNominal += s.totalNominal;
       }
     }
+
+    final matchingRangeTrx = _selectedKelompok == 'ALL'
+        ? _customRangeTransactions
+        : _customRangeTransactions.where((t) => t.items.any((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok)).toList();
+    final int totalTrx = matchingRangeTrx.length;
+    final double totalNominal = _selectedKelompok == 'ALL'
+        ? matchingRangeTrx.fold<double>(0.0, (sum, t) => sum + t.total)
+        : matchingRangeTrx.fold<double>(0.0, (sum, t) {
+            return sum + t.items.where((it) => resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == _selectedKelompok).fold<double>(0.0, (iSum, it) => iSum + it.subtotal);
+          });
 
     final int selisihPeriode = totalMasukPeriode - totalKeluar;
     final int sisaAkumulasi = totalSisaKemarin + totalMasukPeriode - totalKeluar;
@@ -1955,7 +2004,7 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     bool isMonthly = false,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(AppRadius.card),
@@ -1971,137 +2020,200 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header Status & Periode (Simetris & Terlindungi dari Overflow)
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  const Icon(Icons.analytics_rounded, size: 18, color: AppColors.primary),
-                  const SizedBox(width: 6),
-                  Text(
-                    periodTitle,
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
-                  ),
-                ],
+              const Icon(Icons.analytics_rounded, size: 18, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  periodTitle,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: isServerData ? Colors.green.shade50 : Colors.orange.shade50,
-                      borderRadius: BorderRadius.circular(100),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isServerData ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
-                          size: 11,
-                          color: isServerData ? Colors.green.shade800 : Colors.orange.shade800,
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          isServerData ? 'Server API-v2' : 'Cache Offline',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: isServerData ? Colors.green.shade800 : Colors.orange.shade800,
-                          ),
-                        ),
-                      ],
-                    ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isServerData ? Colors.green.shade50 : Colors.orange.shade50,
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(
+                    color: isServerData ? Colors.green.shade200 : Colors.orange.shade200,
                   ),
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(100),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isServerData ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
+                      size: 11,
+                      color: isServerData ? Colors.green.shade800 : Colors.orange.shade800,
                     ),
-                    child: const Text(
-                      'Khusus Admin',
-                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.primary),
+                    const SizedBox(width: 3),
+                    Text(
+                      isServerData ? 'Server' : 'Offline',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: isServerData ? Colors.green.shade800 : Colors.orange.shade800,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                ),
+                child: const Text(
+                  'Admin',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.primary),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
 
-          // Baris 1: Mutasi Fisik (Sisa Kemarin, Masuk Hari Ini, Terjual Hari Ini)
-          Row(
-            children: [
-              // 1. Sisa Kemarin (Bawaan)
-              Expanded(
-                child: _buildMetricTile(
-                  label: isMonthly ? 'Sisa Awal Bulan' : 'Sisa Kemarin',
-                  value: '$sisaKemarin',
-                  unit: 'Unit Bawaan',
-                  color: const Color(0xFF475569),
-                  bgColor: const Color(0xFFF1F5F9),
-                  icon: Icons.history_rounded,
+          // 2x2 Grid KPI Simetris (Ukuran Seimbang 50%-50%)
+          // Baris 1: Sisa Kemarin (Kiri) & Stok Masuk (Kanan)
+          IntrinsicHeight(
+            child: Row(
+              children: [
+                Expanded(
+                  child: _buildMetricTile(
+                    label: isMonthly ? 'Sisa Awal Bulan' : 'Sisa Kemarin',
+                    value: '$sisaKemarin',
+                    unit: 'Unit Bawaan',
+                    color: const Color(0xFF475569),
+                    bgColor: const Color(0xFFF1F5F9),
+                    icon: Icons.history_rounded,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              // 2. Stok Masuk Hari Ini
-              Expanded(
-                child: _buildMetricTile(
-                  label: isMonthly ? 'Masuk Bulan Ini' : 'Masuk Hari Ini',
-                  value: '+$masukHariIni',
-                  unit: 'Pasokan Baru',
-                  color: const Color(0xFF0CA678),
-                  bgColor: const Color(0xFFE6FCF5),
-                  icon: Icons.add_circle_outline,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildMetricTile(
+                    label: isMonthly ? 'Masuk Bulan Ini' : 'Masuk Hari Ini',
+                    value: '+$masukHariIni',
+                    unit: 'Pasokan Baru',
+                    color: const Color(0xFF0CA678),
+                    bgColor: const Color(0xFFE6FCF5),
+                    icon: Icons.add_circle_outline,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              // 3. Stok Terjual
-              Expanded(
-                child: _buildMetricTile(
-                  label: isMonthly ? 'Terjual Bulan Ini' : 'Terjual Hari Ini',
-                  value: '-$totalKeluar',
-                  unit: 'Penjualan',
-                  color: Colors.deepOrange,
-                  bgColor: Colors.deepOrange.shade50,
-                  icon: Icons.remove_circle_outline,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 8),
 
-          // Baris 2: Selisih Hari Ini & Sisa Stok Akumulasi
-          Row(
-            children: [
-              // 4. Selisih Hari Ini (Masuk - Terjual)
-              Expanded(
-                child: _buildMetricTile(
-                  label: isMonthly ? 'Selisih Bulan Ini' : 'Selisih Hari Ini',
-                  value: '${selisihHariIni >= 0 ? '+' : ''}$selisihHariIni',
-                  unit: 'Masuk - Terjual',
-                  color: selisihHariIni >= 0 ? const Color(0xFF0CA678) : Colors.red.shade700,
-                  bgColor: selisihHariIni >= 0 ? const Color(0xFFE6FCF5) : Colors.red.shade50,
-                  icon: Icons.compare_arrows_rounded,
+          // Baris 2: Stok Terjual (Kiri) & Selisih (Kanan)
+          IntrinsicHeight(
+            child: Row(
+              children: [
+                Expanded(
+                  child: _buildMetricTile(
+                    label: isMonthly ? 'Terjual Bulan Ini' : 'Terjual Hari Ini',
+                    value: '-$totalKeluar',
+                    unit: 'Total Penjualan',
+                    color: Colors.deepOrange,
+                    bgColor: const Color(0xFFFBE9E7),
+                    icon: Icons.remove_circle_outline,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              // 5. Sisa Stok Akumulasi (Sisa Kemarin + Selisih)
-              Expanded(
-                child: _buildMetricTile(
-                  label: 'Sisa Stok Akumulasi',
-                  value: '$sisaAkumulasi',
-                  unit: 'Sisa Kemarin + Selisih',
-                  color: AppColors.primary,
-                  bgColor: Colors.blue.shade50,
-                  icon: Icons.inventory_2_rounded,
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildMetricTile(
+                    label: isMonthly ? 'Selisih Bulan' : 'Selisih Hari Ini',
+                    value: '${selisihHariIni >= 0 ? '+' : ''}$selisihHariIni',
+                    unit: 'Masuk - Terjual',
+                    color: selisihHariIni >= 0 ? const Color(0xFF0CA678) : Colors.red.shade700,
+                    bgColor: selisihHariIni >= 0 ? const Color(0xFFE6FCF5) : Colors.red.shade50,
+                    icon: Icons.compare_arrows_rounded,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
+          const SizedBox(height: 10),
+
+          // Baris 3: Banner Penuh SISA STOK AKUMULASI (Highlight Simetris & Anti-Overflow)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.blue.shade200),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.inventory_2_rounded, size: 16, color: Colors.white),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'SISA STOK AKUMULASI',
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.3,
+                          color: AppColors.primary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        'Kemarin ($sisaKemarin) + Masuk ($masukHariIni) - Terjual ($totalKeluar)',
+                        style: TextStyle(fontSize: 9.5, color: Colors.grey.shade700),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  constraints: const BoxConstraints(maxWidth: 105),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
+                  ),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      '$sisaAkumulasi Unit',
+                      style: const TextStyle(
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w900,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           if (totalTrx > 0 || totalNominal > 0) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
@@ -2110,27 +2222,25 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
                 border: Border.all(color: Colors.grey.shade200),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.receipt_long_rounded, size: 16, color: AppColors.primary),
-                      const SizedBox(width: 6),
-                      Text(
-                        '$totalTrx Transaksi Penjualan',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                    ],
+                  const Icon(Icons.receipt_long_rounded, size: 16, color: AppColors.primary),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$totalTrx Nota Transaksi',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
                   ),
-                  Row(
-                    children: [
-                      const Icon(Icons.payments_outlined, size: 16, color: Color(0xFF0CA678)),
-                      const SizedBox(width: 4),
-                      Text(
+                  const Spacer(),
+                  const Icon(Icons.payments_outlined, size: 16, color: Color(0xFF0CA678)),
+                  const SizedBox(width: 4),
+                  Flexible(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Text(
                         'Rp ${NumberFormat('#,###', 'id_ID').format(totalNominal)}',
                         style: const TextStyle(
                           fontSize: 12.5,
@@ -2138,7 +2248,7 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
                           color: Color(0xFF0CA678),
                         ),
                       ),
-                    ],
+                    ),
                   ),
                 ],
               ),
@@ -2158,22 +2268,28 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
     required IconData icon,
   }) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
       decoration: BoxDecoration(
         color: bgColor,
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.15)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Row(
             children: [
               Icon(icon, size: 14, color: color),
-              const SizedBox(width: 4),
+              const SizedBox(width: 5),
               Expanded(
                 child: Text(
                   label,
-                  style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: color),
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -2183,15 +2299,25 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
           const SizedBox(height: 6),
           FittedBox(
             fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
             child: Text(
               value,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: color),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                color: color,
+              ),
             ),
           ),
           const SizedBox(height: 2),
           Text(
             unit,
-            style: const TextStyle(fontSize: 9.5, color: AppColors.textSecondary),
+            style: const TextStyle(
+              fontSize: 10,
+              color: AppColors.textSecondary,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -2225,15 +2351,15 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(AppRadius.card),
         border: Border.all(color: Colors.grey.shade200),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 4,
+            color: Colors.black.withValues(alpha: 0.025),
+            blurRadius: 6,
             offset: const Offset(0, 2),
           ),
         ],
@@ -2241,7 +2367,7 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header Kartu
+          // 1. Header Kartu Komoditas
           Row(
             children: [
               Container(
@@ -2259,8 +2385,15 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
                   children: [
                     Text(
                       s.displayName,
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
+                    const SizedBox(height: 1),
                     Text(
                       'Satuan: ${s.unitName}',
                       style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
@@ -2268,26 +2401,42 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              // Badge Sisa Akumulasi (Anti-Overflow & Terukur)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                constraints: const BoxConstraints(maxWidth: 115),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
+                  color: groupColor.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.shade200),
+                  border: Border.all(color: groupColor.withValues(alpha: 0.25)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text(
-                      'SISA AKUMULASI',
-                      style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: AppColors.primary),
-                    ),
                     Text(
-                      '${s.sisaAkumulasi} ${s.unitName}',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.primary,
+                      'SISA AKUMULASI',
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.4,
+                        color: groupColor,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 1),
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Text(
+                        '${s.sisaAkumulasi} ${s.unitName}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          color: groupColor,
+                        ),
                       ),
                     ),
                   ],
@@ -2295,157 +2444,179 @@ class _StockFlowReportPageState extends State<StockFlowReportPage>
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
 
-          // Baris 1: Rincian Mutasi Fisik (Sisa Kemarin, Masuk Hari Ini, Terjual Hari Ini)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.bgSecondary,
-              borderRadius: BorderRadius.circular(8),
-            ),
+          // 2. Body Grid 2x2 Simetris & Seragam (Semua box memiliki ukuran seimbang dan anti-overflow)
+          // Baris 1: Sisa Kemarin (Kiri) & Masuk (Kanan)
+          IntrinsicHeight(
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // Sisa Kemarin / Awal Bulan
-                Row(
-                  children: [
-                    const Icon(Icons.history_rounded, size: 13, color: Color(0xFF475569)),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${isMonthly ? 'Awal Bulan' : 'Kemarin'}: ${s.sisaKemarin}',
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF475569)),
-                    ),
-                  ],
+                Expanded(
+                  child: _buildCommodityMiniTile(
+                    label: isMonthly ? 'Awal Bulan' : 'Sisa Kemarin',
+                    value: '${s.sisaKemarin}',
+                    unit: s.unitName,
+                    color: const Color(0xFF475569),
+                    bgColor: const Color(0xFFF1F5F9),
+                    icon: Icons.history_rounded,
+                  ),
                 ),
-                Container(width: 1, height: 14, color: Colors.grey.shade300),
-                // Masuk Hari Ini / Bulan Ini
-                Row(
-                  children: [
-                    const Icon(Icons.arrow_downward_rounded, size: 13, color: Color(0xFF0CA678)),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Masuk: +${s.masukHariIni}',
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0CA678)),
-                    ),
-                  ],
-                ),
-                Container(width: 1, height: 14, color: Colors.grey.shade300),
-                // Terjual
-                Row(
-                  children: [
-                    const Icon(Icons.arrow_upward_rounded, size: 13, color: Colors.deepOrange),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Terjual: -${s.keluar}',
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.deepOrange),
-                    ),
-                  ],
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildCommodityMiniTile(
+                    label: isMonthly ? 'Masuk Bulan Ini' : 'Masuk Hari Ini',
+                    value: '+${s.masukHariIni}',
+                    unit: s.unitName,
+                    color: const Color(0xFF0CA678),
+                    bgColor: const Color(0xFFE6FCF5),
+                    icon: Icons.add_circle_outline,
+                  ),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 8),
 
-          // Baris 2: Selisih Hari Ini / Bulan Ini & Sisa Stok Akumulasi
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: s.selisihHariIni >= 0 ? const Color(0xFFE6FCF5) : Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: s.selisihHariIni >= 0 ? const Color(0xFFB2F2BB) : Colors.red.shade200,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.compare_arrows_rounded,
-                        size: 13,
-                        color: s.selisihHariIni >= 0 ? const Color(0xFF0CA678) : Colors.red.shade700,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${isMonthly ? 'Selisih Bulan' : 'Selisih Hari Ini'}: ${s.selisihHariIni >= 0 ? '+' : ''}${s.selisihHariIni} ${s.unitName}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: s.selisihHariIni >= 0 ? const Color(0xFF0CA678) : Colors.red.shade800,
-                        ),
-                      ),
-                    ],
+          // Baris 2: Terjual (Kiri) & Selisih (Kanan)
+          IntrinsicHeight(
+            child: Row(
+              children: [
+                Expanded(
+                  child: _buildCommodityMiniTile(
+                    label: isMonthly ? 'Terjual Bulan Ini' : 'Terjual Hari Ini',
+                    value: '-${s.keluar}',
+                    unit: s.unitName,
+                    color: Colors.deepOrange,
+                    bgColor: const Color(0xFFFBE9E7),
+                    icon: Icons.remove_circle_outline,
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.blue.shade100),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _buildCommodityMiniTile(
+                    label: isMonthly ? 'Selisih Bulan' : 'Selisih Hari Ini',
+                    value: '${s.selisihHariIni >= 0 ? '+' : ''}${s.selisihHariIni}',
+                    unit: s.unitName,
+                    color: s.selisihHariIni >= 0 ? const Color(0xFF0CA678) : Colors.red.shade700,
+                    bgColor: s.selisihHariIni >= 0 ? const Color(0xFFE6FCF5) : Colors.red.shade50,
+                    icon: Icons.compare_arrows_rounded,
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.inventory_2_rounded, size: 13, color: AppColors.primary),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Akumulasi: ${s.sisaAkumulasi} ${s.unitName}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.primary,
-                        ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // 3. Footer Seragam: Nota & Omset (Selalu tampil di setiap kartu agar simetris satu ukuran)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: AppColors.bgSecondary,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.receipt_outlined, size: 13, color: AppColors.primary),
+                const SizedBox(width: 5),
+                Text(
+                  '${s.totalTransaksi} Nota',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const Spacer(),
+                const Icon(Icons.payments_outlined, size: 13, color: Color(0xFF0CA678)),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      'Rp ${NumberFormat('#,###', 'id_ID').format(s.totalNominal)}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF0CA678),
                       ),
-                    ],
+                    ),
                   ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCommodityMiniTile({
+    required String label,
+    required String value,
+    required String unit,
+    required Color color,
+    required Color bgColor,
+    required IconData icon,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 13, color: color),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],
           ),
-
-          if (s.totalNominal > 0 || s.totalTransaksi > 0) ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50.withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: Colors.grey.shade200),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.receipt_outlined, size: 13, color: AppColors.primary),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${s.totalTransaksi} Transaksi Penjualan',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
-                      ),
-                    ],
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    color: color,
                   ),
-                  Row(
-                    children: [
-                      const Icon(Icons.payments_outlined, size: 13, color: Color(0xFF0CA678)),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Omset: Rp ${NumberFormat('#,###', 'id_ID').format(s.totalNominal)}',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF0CA678)),
-                      ),
-                    ],
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  unit,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: color.withValues(alpha: 0.85),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
+          ),
         ],
       ),
     );

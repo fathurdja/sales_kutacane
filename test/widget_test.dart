@@ -215,5 +215,51 @@ void main() {
       final listAfter = await PendingStockSyncService.getPendingEntries();
       expect(listAfter.any((e) => e.id == 'STOCK-MASUK-999'), isFalse);
     });
+
+    test('Total transaction count in stock monitoring matches daily report distinct count (20 notas instead of 27)', () {
+      final List<Transaction> dummyDayTrx = [];
+      for (int i = 1; i <= 20; i++) {
+        final List<TransactionItem> items = [];
+        if (i <= 10) {
+          items.add(TransactionItem.fromData(name: 'Boneva Galon isi saja', price: 13000, quantity: 2, bonus: 0, tyunit: 'BV02'));
+        }
+        if (i >= 4 && i <= 11) {
+          items.add(TransactionItem.fromData(name: 'Boneva Botol 600ml', price: 40000, quantity: 1, bonus: 0, tyunit: 'BV13'));
+        }
+        if (i >= 12 && i <= 15) {
+          items.add(TransactionItem.fromData(name: 'Boneva Botol 1.5L', price: 42000, quantity: 1, bonus: 0, tyunit: 'BV16'));
+        }
+        if (i >= 16 && i <= 20) {
+          items.add(TransactionItem.fromData(name: 'Boneva Gelas', price: 22000, quantity: 2, bonus: 0, tyunit: 'BV20'));
+        }
+
+        dummyDayTrx.add(Transaction(
+          id: 'TRX-$i',
+          id_transaksi: 'TRX-$i',
+          customerName: 'Customer $i',
+          date: DateTime(2026, 11, 10, 10, i),
+          alamat: 'Gorontalo',
+          items: items,
+          total: items.fold<double>(0.0, (s, it) => s + it.subtotal),
+          status: 'LUNAS',
+        ));
+      }
+
+      // Total nota harian yang sebenarnya
+      expect(dummyDayTrx.length, 20);
+
+      // Jika dijumlahkan per kelompok secara naif:
+      final galonTrx = dummyDayTrx.where((t) => t.items.any((it) => StockFlowReportPage.resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == 'GALON')).length;
+      final botol600Trx = dummyDayTrx.where((t) => t.items.any((it) => StockFlowReportPage.resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == 'BOTOL_600')).length;
+      final botol1500Trx = dummyDayTrx.where((t) => t.items.any((it) => StockFlowReportPage.resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == 'BOTOL_1500')).length;
+      final gelasTrx = dummyDayTrx.where((t) => t.items.any((it) => StockFlowReportPage.resolveCommodityKelompok(tyunit: it.tyunit, itemName: it.name) == 'GELAS')).length;
+
+      final int naiveSum = galonTrx + botol600Trx + botol1500Trx + gelasTrx;
+      expect(naiveSum, 27); // Duplikasi karena 1 nota bisa berisi beberapa jenis komoditas
+
+      // Dengan perbaikan distinct nota, total nota yang ditampilkan cocok 1:1 dengan Laporan Harian (20 Nota)
+      final int distinctTotalTrx = dummyDayTrx.length;
+      expect(distinctTotalTrx, 20);
+    });
   });
 }

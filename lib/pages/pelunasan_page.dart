@@ -128,12 +128,15 @@ class _PelunasanPageState extends State<PelunasanPage>
         // Sinkronkan dan lengkapi tanggal_pelunasan dari PelunasanHistoryService
         final historyMap = await PelunasanHistoryService.loadHistory();
         for (final t in list) {
-          if (historyMap.containsKey(t.id_transaksi)) {
-            final rec = historyMap[t.id_transaksi]!;
+          final paidTrx = payments
+              .where((p) => p.idTransaksi == t.id_transaksi)
+              .fold<double>(0.0, (sum, p) => sum + p.nominalBayar);
+          if (historyMap.containsKey(t.id_transaksi) || (t.total > 0 && paidTrx >= t.total)) {
+            final rec = historyMap[t.id_transaksi];
             if (t.status.toUpperCase() == 'BON') {
               t.status = 'BON LUNAS';
             }
-            t.tanggalPelunasan = rec.tanggalPelunasan;
+            t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
           } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
             t.tanggalPelunasan = t.date;
           }
@@ -174,12 +177,15 @@ class _PelunasanPageState extends State<PelunasanPage>
 
         final historyMap = await PelunasanHistoryService.loadHistory();
         for (final t in list) {
-          if (historyMap.containsKey(t.id_transaksi)) {
-            final rec = historyMap[t.id_transaksi]!;
+          final paidTrx = payments
+              .where((p) => p.idTransaksi == t.id_transaksi)
+              .fold<double>(0.0, (sum, p) => sum + p.nominalBayar);
+          if (historyMap.containsKey(t.id_transaksi) || (t.total > 0 && paidTrx >= t.total)) {
+            final rec = historyMap[t.id_transaksi];
             if (t.status.toUpperCase() == 'BON') {
               t.status = 'BON LUNAS';
             }
-            t.tanggalPelunasan = rec.tanggalPelunasan;
+            t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
           } else if (t.status.toUpperCase() == 'LUNAS' && t.tanggalPelunasan == null) {
             t.tanggalPelunasan = t.date;
           }
@@ -375,6 +381,7 @@ class _PelunasanPageState extends State<PelunasanPage>
           double enteredAmount = double.tryParse(nominalCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
           if (isFullPayment) enteredAmount = group.sisaBon;
           final double sisaPreview = (group.sisaBon - enteredAmount).clamp(0.0, group.totalOriginalBon);
+          final bool isOverPay = !isFullPayment && enteredAmount > group.sisaBon;
 
           return Container(
             padding: EdgeInsets.only(
@@ -598,6 +605,17 @@ class _PelunasanPageState extends State<PelunasanPage>
                         ],
                       ),
                     ),
+                    if (isOverPay) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Nominal cicilan melebihi sisa tagihan (${currencyFormat.format(group.sisaBon)})',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red.shade700,
+                        ),
+                      ),
+                    ],
                   ],
 
                   const SizedBox(height: 14),
@@ -704,7 +722,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 14),
                           ),
-                          onPressed: (isSubmitting || (!isFullPayment && enteredAmount <= 0))
+                          onPressed: (isSubmitting || (!isFullPayment && (enteredAmount <= 0 || isOverPay)))
                               ? null
                               : () async {
                                   setModalState(() => isSubmitting = true);
@@ -745,17 +763,7 @@ class _PelunasanPageState extends State<PelunasanPage>
     final double sisaSetelahBayar = (group.sisaBon - payAmount).clamp(0.0, group.totalOriginalBon);
 
     try {
-      // 1. Catat pembayaran di PelunasanHistoryService
-      await PelunasanHistoryService.recordPayment(
-        customerName: group.customerName,
-        nominalBayar: payAmount,
-        sisaBon: sisaSetelahBayar,
-        tanggalPelunasan: tanggalPelunasan,
-        catatan: catatan?.isNotEmpty == true ? catatan : (isLunasPenuh ? 'Pelunasan Penuh' : 'Pembayaran Sebagian (Cicilan)'),
-        isLunas: isLunasPenuh,
-      );
-
-      // 2. Alokasikan pembayaran ke nota transaksi dari yang terlama ke terbaru
+      // Alokasikan pembayaran ke nota transaksi dari yang terlama ke terbaru
       final sortedTrx = List<Transaction>.from(group.transactions)
         ..sort((a, b) => a.date.compareTo(b.date));
 
@@ -776,13 +784,25 @@ class _PelunasanPageState extends State<PelunasanPage>
             customerName: trx.customerName,
             idTransaksi: trx.id_transaksi,
             nominalBayar: remToAllocate,
-            sisaBon: sisaTrx - remToAllocate,
+            sisaBon: (sisaTrx - remToAllocate).clamp(0.0, sisaTrx),
             tanggalPelunasan: tanggalPelunasan,
             catatan: 'Cicilan untuk nota ${trx.id_transaksi}',
             isLunas: false,
           );
           remToAllocate = 0;
         }
+      }
+
+      // Jika ada sisa pembayaran yang belum teralokasikan atau grup nota kosong
+      if (remToAllocate > 0 || group.transactions.isEmpty) {
+        await PelunasanHistoryService.recordPayment(
+          customerName: group.customerName,
+          nominalBayar: remToAllocate > 0 ? remToAllocate : payAmount,
+          sisaBon: sisaSetelahBayar,
+          tanggalPelunasan: tanggalPelunasan,
+          catatan: catatan?.isNotEmpty == true ? catatan : (isLunasPenuh ? 'Pelunasan Penuh' : 'Pembayaran Sebagian (Cicilan)'),
+          isLunas: isLunasPenuh,
+        );
       }
 
       // 3. Cetak struk jika dipilih
@@ -838,12 +858,17 @@ class _PelunasanPageState extends State<PelunasanPage>
       return;
     }
 
+    final paidForTrx = _allPayments
+        .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
+        .fold(0.0, (sum, p) => sum + p.nominalBayar);
+    final double sisaTrx = (trx.total - paidForTrx).clamp(0.0, trx.total);
+
     DateTime selectedDate = DateTime.now();
     bool isSubmitting = false;
     bool isFullPayment = true;
     bool printReceipt = true;
     final isQris = trx.isQris;
-    final nominalCtrl = TextEditingController(text: trx.total.toInt().toString());
+    final nominalCtrl = TextEditingController(text: sisaTrx.toInt().toString());
     final catatanCtrl = TextEditingController();
 
     showModalBottomSheet(
@@ -857,8 +882,9 @@ class _PelunasanPageState extends State<PelunasanPage>
           final dateFormat = DateFormat('EEEE, dd MMMM yyyy', 'id_ID');
 
           double enteredAmount = double.tryParse(nominalCtrl.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0.0;
-          if (isFullPayment) enteredAmount = trx.total;
-          final double sisaPreview = (trx.total - enteredAmount).clamp(0.0, trx.total);
+          if (isFullPayment) enteredAmount = sisaTrx;
+          final double sisaPreview = (sisaTrx - enteredAmount).clamp(0.0, sisaTrx);
+          final bool isOverPay = !isFullPayment && enteredAmount > sisaTrx;
 
           return Container(
             padding: EdgeInsets.only(
@@ -958,17 +984,42 @@ class _PelunasanPageState extends State<PelunasanPage>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(isQris ? 'Nominal QRIS:' : 'Total Tagihan:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            Text(isQris ? 'Nominal QRIS:' : 'Total Tagihan Awal:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                             Text(
                               currencyFormat.format(trx.total),
                               style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w800,
-                                color: isQris ? AppColors.qris : AppColors.bon,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: isQris ? AppColors.qris : AppColors.textPrimary,
                               ),
                             ),
                           ],
                         ),
+                        if (!isQris && paidForTrx > 0) ...[
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Sudah Pernah Dicicil:', style: TextStyle(fontSize: 12, color: AppColors.lunas)),
+                              Text('+${currencyFormat.format(paidForTrx)}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lunas)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Sisa Piutang Saat Ini:', style: TextStyle(fontSize: 12, color: AppColors.bon, fontWeight: FontWeight.bold)),
+                              Text(
+                                currencyFormat.format(sisaTrx),
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w900,
+                                  color: AppColors.bon,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -981,12 +1032,12 @@ class _PelunasanPageState extends State<PelunasanPage>
                       contentPadding: EdgeInsets.zero,
                       dense: true,
                       activeColor: AppColors.lunas,
-                      title: const Text('Lunaskan Sekaligus (Penuh)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      subtitle: Text('Bayar lunas seluruh nota (${currencyFormat.format(trx.total)})'),
+                      title: const Text('Lunaskan Sekaligus (Bayar Sisa)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      subtitle: Text('Bayar lunas sisa nota (${currencyFormat.format(sisaTrx)})'),
                       onChanged: (val) {
                         setModalState(() {
                           isFullPayment = true;
-                          nominalCtrl.text = trx.total.toInt().toString();
+                          nominalCtrl.text = sisaTrx.toInt().toString();
                         });
                       },
                     ),
@@ -997,9 +1048,13 @@ class _PelunasanPageState extends State<PelunasanPage>
                       dense: true,
                       activeColor: AppColors.primary,
                       title: const Text('Bayar Sebagian Dulu (Cicil)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      subtitle: const Text('Tentukan nominal cicilan yang disetor hari ini'),
                       onChanged: (val) {
                         setModalState(() {
                           isFullPayment = false;
+                          if (enteredAmount >= sisaTrx) {
+                            nominalCtrl.text = (sisaTrx > 50000 ? 50000 : sisaTrx / 2).toInt().toString();
+                          }
                         });
                       },
                     ),
@@ -1015,8 +1070,79 @@ class _PelunasanPageState extends State<PelunasanPage>
                         ),
                         onChanged: (_) => setModalState(() {}),
                       ),
-                      const SizedBox(height: 6),
-                      Text('Sisa tagihan nota nanti: ${currencyFormat.format(sisaPreview)}', style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      // Quick Chips
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            if (sisaTrx > 20000)
+                              ActionChip(
+                                label: const Text('20 Rb'),
+                                onPressed: () {
+                                  nominalCtrl.text = '20000';
+                                  setModalState(() {});
+                                },
+                              ),
+                            const SizedBox(width: 6),
+                            if (sisaTrx > 50000)
+                              ActionChip(
+                                label: const Text('50 Rb'),
+                                onPressed: () {
+                                  nominalCtrl.text = '50000';
+                                  setModalState(() {});
+                                },
+                              ),
+                            const SizedBox(width: 6),
+                            if (sisaTrx > 100000)
+                              ActionChip(
+                                label: const Text('100 Rb'),
+                                onPressed: () {
+                                  nominalCtrl.text = '100000';
+                                  setModalState(() {});
+                                },
+                              ),
+                            const SizedBox(width: 6),
+                            ActionChip(
+                              label: const Text('50%'),
+                              onPressed: () {
+                                nominalCtrl.text = (sisaTrx * 0.5).toInt().toString();
+                                setModalState(() {});
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Sisa Tagihan Nota Nanti:', style: TextStyle(fontSize: 12, color: AppColors.primary)),
+                            Text(
+                              currencyFormat.format(sisaPreview),
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.primary),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (isOverPay) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Nominal cicilan melebihi sisa tagihan (${currencyFormat.format(sisaTrx)})',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red.shade700,
+                          ),
+                        ),
+                      ],
                     ],
                   ],
 
@@ -1109,13 +1235,15 @@ class _PelunasanPageState extends State<PelunasanPage>
                               ? 'Memproses...'
                               : (isQris
                                   ? 'Verifikasi Lunas'
-                                  : (isFullPayment ? 'Lunasi Sekarang' : 'Simpan Pembayaran'))),
+                                  : (isFullPayment
+                                      ? 'Lunasi Sisa (${currencyFormat.format(sisaTrx)})'
+                                      : 'Simpan Cicilan (${currencyFormat.format(enteredAmount)})'))),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: isQris ? AppColors.qris : AppColors.lunas,
+                            backgroundColor: isQris ? AppColors.qris : (isFullPayment ? AppColors.lunas : AppColors.primary),
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(vertical: 14),
                           ),
-                          onPressed: (isSubmitting || (!isFullPayment && enteredAmount <= 0))
+                          onPressed: (isSubmitting || (!isFullPayment && (enteredAmount <= 0 || isOverPay)))
                               ? null
                               : () async {
                                   setModalState(() => isSubmitting = true);
@@ -1152,19 +1280,34 @@ class _PelunasanPageState extends State<PelunasanPage>
   }) async {
     if (!_isAdmin) return;
     final wasQris = trx.isQris;
-    final double actualPay = payAmount ?? trx.total;
-    final bool isCleared = isFullPayment || actualPay >= trx.total;
+    final paidForTrx = _allPayments
+        .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
+        .fold(0.0, (sum, p) => sum + p.nominalBayar);
+    final double sisaTrx = (trx.total - paidForTrx).clamp(0.0, trx.total);
+    final double actualPay = payAmount ?? sisaTrx;
+    final bool isCleared = isFullPayment || actualPay >= sisaTrx;
+    final double sisaSetelahBayar = (sisaTrx - actualPay).clamp(0.0, sisaTrx);
 
     try {
       if (isCleared) {
         await _executeSingleTrxSettlement(trx, tanggalPelunasan);
+        // Catat pembayaran pelunasan penuh
+        await PelunasanHistoryService.recordPayment(
+          customerName: trx.customerName,
+          idTransaksi: trx.id_transaksi,
+          nominalBayar: actualPay,
+          sisaBon: 0.0,
+          tanggalPelunasan: tanggalPelunasan,
+          catatan: catatan?.isNotEmpty == true ? catatan : 'Pelunasan nota ${trx.id_transaksi}',
+          isLunas: true,
+        );
       } else {
         // Catat cicilan sebagian
         await PelunasanHistoryService.recordPayment(
           customerName: trx.customerName,
           idTransaksi: trx.id_transaksi,
           nominalBayar: actualPay,
-          sisaBon: trx.total - actualPay,
+          sisaBon: sisaSetelahBayar,
           tanggalPelunasan: tanggalPelunasan,
           catatan: catatan?.isNotEmpty == true ? catatan : 'Cicilan untuk nota ${trx.id_transaksi}',
           isLunas: false,
@@ -1176,9 +1319,9 @@ class _PelunasanPageState extends State<PelunasanPage>
         await _printPaymentReceipt(
           customerName: trx.customerName,
           idTransaksi: trx.id_transaksi,
-          totalBonAwal: trx.total,
+          totalBonAwal: sisaTrx,
           nominalBayar: actualPay,
-          sisaBon: isCleared ? 0.0 : (trx.total - actualPay),
+          sisaBon: sisaSetelahBayar,
           tanggalPelunasan: tanggalPelunasan,
           catatan: catatan,
           isLunas: isCleared,
@@ -1190,6 +1333,7 @@ class _PelunasanPageState extends State<PelunasanPage>
       }
 
       if (!mounted) return;
+      final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -1197,13 +1341,13 @@ class _PelunasanPageState extends State<PelunasanPage>
                 ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DIVERIFIKASI LUNAS!'
                 : (isCleared
                     ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DILUNASI!'
-                    : 'Pembayaran sebagian untuk nota ${trx.id_transaksi} berhasil dicatat!'),
+                    : 'Pembayaran sebagian ${currencyFormat.format(actualPay)} untuk nota ${trx.id_transaksi} berhasil dicatat! Sisa: ${currencyFormat.format(sisaSetelahBayar)}'),
           ),
-          backgroundColor: wasQris ? AppColors.qris : AppColors.lunas,
+          backgroundColor: wasQris ? AppColors.qris : (isCleared ? AppColors.lunas : Colors.orange.shade800),
         ),
       );
 
-      fetchTransactions();
+      await fetchTransactions();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2077,6 +2221,12 @@ class _PelunasanPageState extends State<PelunasanPage>
         separatorBuilder: (_, __) => const SizedBox(height: 12),
         itemBuilder: (ctx, idx) {
           final trx = list[idx];
+          final paidForTrx = _allPayments
+              .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
+              .fold(0.0, (sum, p) => sum + p.nominalBayar);
+          final sisaTrx = (trx.total - paidForTrx).clamp(0.0, trx.total);
+          final isCicil = !trx.isQris && paidForTrx > 0;
+
           return Card(
             elevation: 1.5,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -2091,18 +2241,26 @@ class _PelunasanPageState extends State<PelunasanPage>
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: trx.isQris ? AppColors.qrisBg : AppColors.bonBg,
+                          color: trx.isQris
+                              ? AppColors.qrisBg
+                              : (isCicil ? Colors.orange.shade50 : AppColors.bonBg),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
-                            color: (trx.isQris ? AppColors.qris : AppColors.bon).withOpacity(0.3),
+                            color: trx.isQris
+                                ? AppColors.qris.withOpacity(0.3)
+                                : (isCicil ? Colors.orange.shade300 : AppColors.bon.withOpacity(0.3)),
                           ),
                         ),
                         child: Text(
-                          trx.isQris ? 'MENUNGGU VERIFIKASI (QRIS)' : 'BELUM LUNAS (BON)',
+                          trx.isQris
+                              ? 'MENUNGGU VERIFIKASI (QRIS)'
+                              : (isCicil ? 'DICICIL (SISA: ${currencyFormat.format(sisaTrx)})' : 'BELUM LUNAS (BON)'),
                           style: TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w800,
-                            color: trx.isQris ? AppColors.qris : AppColors.bon,
+                            color: trx.isQris
+                                ? AppColors.qris
+                                : (isCicil ? Colors.orange.shade900 : AppColors.bon),
                           ),
                         ),
                       ),
@@ -2141,17 +2299,25 @@ class _PelunasanPageState extends State<PelunasanPage>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            trx.isQris ? 'Nominal QRIS' : 'Total Piutang',
+                            trx.isQris ? 'Nominal QRIS' : (isCicil ? 'Sisa Piutang' : 'Total Piutang'),
                             style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
                           ),
                           Text(
-                            currencyFormat.format(trx.total),
+                            currencyFormat.format(isCicil ? sisaTrx : trx.total),
                             style: TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w900,
                               color: trx.isQris ? AppColors.qris : AppColors.bon,
                             ),
                           ),
+                          if (isCicil)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                'Awal: ${currencyFormat.format(trx.total)} • Masuk: ${currencyFormat.format(paidForTrx)}',
+                                style: const TextStyle(fontSize: 10.5, color: AppColors.textSecondary),
+                              ),
+                            ),
                         ],
                       ),
                       Row(
@@ -2175,17 +2341,21 @@ class _PelunasanPageState extends State<PelunasanPage>
                           if (_isAdmin)
                             ElevatedButton.icon(
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: trx.isQris ? AppColors.qris : AppColors.lunas,
+                                backgroundColor: trx.isQris
+                                    ? AppColors.qris
+                                    : (isCicil ? AppColors.primary : AppColors.lunas),
                                 foregroundColor: Colors.white,
                                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                 visualDensity: VisualDensity.compact,
                               ),
                               icon: Icon(
-                                trx.isQris ? Icons.verified_outlined : Icons.check_circle_outline,
+                                trx.isQris
+                                    ? Icons.verified_outlined
+                                    : (isCicil ? Icons.payments_outlined : Icons.check_circle_outline),
                                 size: 16,
                               ),
                               label: Text(
-                                trx.isQris ? 'Verifikasi' : 'Lunasi',
+                                trx.isQris ? 'Verifikasi' : (isCicil ? 'Cicil / Lunasi' : 'Lunasi'),
                                 style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
                               ),
                               onPressed: () => _showPelunasanDialog(trx),
