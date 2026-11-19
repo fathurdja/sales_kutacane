@@ -244,7 +244,7 @@ class TestPrint {
       // STATUS
       await bluetooth.printCustom("STATUS PEMBAYARAN", Size.medium.val, Align.center.val);
       await bluetooth.printCustom(
-        isLunas ? "LUNAS (SELESAI)" : "BELUM LUNAS (SEBAGIAN)",
+        isLunas ? "LUNAS (SELESAI)" : "SUDAH DIBAYAR SEBAGIAN",
         Size.boldLarge.val,
         Align.center.val,
       );

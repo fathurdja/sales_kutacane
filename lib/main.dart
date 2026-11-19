@@ -8,6 +8,7 @@ import 'package:kasir_kutacane/pages/transactionlistBackup.dart';
 import 'package:kasir_kutacane/pages/login_page.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
+import 'package:kasir_kutacane/widgets/transaction_success_dialog.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
@@ -62,9 +63,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
   // Callback untuk menerima transaksi dari input page
   void _addTransaction(Transaction transaction) {
-    // Navigasi kembali ke tab Transaksi (index 1) setelah simpan
+    // Navigasi kembali ke tab Beranda (index 0) setelah simpan
     setState(() {
-      _selectedIndex = 1;
+      _selectedIndex = 0;
     });
     _homeKey.currentState?.fetchTodayTransactions();
     _transactionListKey.currentState?.fetchTransactions();
@@ -84,8 +85,10 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     _homeKey.currentState?.fetchTodayTransactions();
     _transactionListKey.currentState?.fetchTransactions();
 
-    if (newTrx != null) {
+    if (newTrx != null && mounted) {
       _addTransaction(newTrx);
+      // Tampilkan pop-up dialog detail transaksi yang baru saja disimpan di Beranda
+      TransactionSuccessDialog.show(context, newTrx);
     }
   }
 

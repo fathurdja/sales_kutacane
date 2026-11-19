@@ -17,6 +17,9 @@ class StatusChip extends StatelessWidget {
     final isBonLunas = status.toUpperCase() == 'BON LUNAS' || status.toUpperCase() == 'BON_LUNAS';
     final isQris = status.toUpperCase() == 'QRIS';
     final isCadangan = status.toUpperCase() == 'CADANGAN';
+    final isDicicil = status.toUpperCase() == 'SUDAH DIBAYAR SEBAGIAN' ||
+        status.toUpperCase() == 'DICICIL' ||
+        status.toUpperCase() == 'SEBAGIAN';
 
     final Color bg;
     final Color fg;
@@ -34,6 +37,10 @@ class StatusChip extends StatelessWidget {
       bg = AppColors.lunasBg;
       fg = AppColors.lunas;
       icon = Icons.check_circle_outline;
+    } else if (isDicicil) {
+      bg = const Color(0xFFFFF4E6);
+      fg = const Color(0xFFD9480F);
+      icon = Icons.payments_outlined;
     } else if (isQris) {
       bg = const Color(0xFFE7F5FF);
       fg = const Color(0xFF1971C2);
@@ -50,7 +57,9 @@ class StatusChip extends StatelessWidget {
             ? 'BON LUNAS'
             : (isLunas
                 ? 'NOTA LUNAS'
-                : (isQris ? 'NOTA QRIS' : 'NOTA BON')));
+                : (isDicicil
+                    ? 'SUDAH DIBAYAR SEBAGIAN'
+                    : (isQris ? 'QRIS / TRANSFER' : 'NOTA BON'))));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),

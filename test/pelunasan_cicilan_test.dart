@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kasir_kutacane/models/transaction.dart';
 import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
 
 void main() {
@@ -104,7 +105,7 @@ void main() {
           notaSisa[tId] = 0.0;
         } else {
           notaSisa[tId] = tTotal - remToAllocate;
-          notaStatus[tId] = 'DICICIL';
+          notaStatus[tId] = 'SUDAH DIBAYAR SEBAGIAN';
           remToAllocate = 0;
         }
       }
@@ -113,9 +114,55 @@ void main() {
       expect(notaStatus['Trx-A'], equals('BON LUNAS'));
       expect(notaSisa['Trx-A'], equals(0.0));
 
-      // Nota B terbayar 30.000, sisa 70.000
-      expect(notaStatus['Trx-B'], equals('DICICIL'));
+      // Nota B terbayar 30.000, sisa 70.000 (status: SUDAH DIBAYAR SEBAGIAN, jangan ditulis lunas!)
+      expect(notaStatus['Trx-B'], equals('SUDAH DIBAYAR SEBAGIAN'));
       expect(notaSisa['Trx-B'], equals(70000.0));
+    });
+
+    test('Validasi Transaction model properties untuk status SUDAH DIBAYAR SEBAGIAN', () {
+      final trx = Transaction(
+        id: '1',
+        id_transaksi: 'Trx-001',
+        customerName: 'Toko Berkah',
+        date: DateTime(2026, 11, 10),
+        alamat: 'Kutacane',
+        items: [],
+        total: 150000.0,
+        status: 'SUDAH DIBAYAR SEBAGIAN',
+      );
+
+      // Status ini JANGAN dianggap lunas, tapi harus tetap dianggap BON aktif (muncul di tab pending)
+      expect(trx.isDicicil, isTrue);
+      expect(trx.isBon, isTrue);
+      expect(trx.isLunas, isFalse);
+      expect(trx.isBonLunas, isFalse);
+      expect(trx.isSettled, isFalse);
+    });
+
+    test('Validasi teks rincian cicilan: bayar berapa dari total bon berapa dan tanggal mencicil', () {
+      const double totalBonAwal = 250000.0;
+      final paymentDate = DateTime(2026, 11, 12, 14, 30);
+      final payment = PelunasanPayment(
+        id: 'PAY-100',
+        customerName: 'Haji Ahmad',
+        idTransaksi: 'Trx-20261110-001',
+        nominalBayar: 100000.0,
+        sisaBon: 150000.0,
+        tanggalPelunasan: paymentDate,
+        settledAt: paymentDate,
+        catatan: 'Titip via Sales 1',
+        isLunas: false,
+      );
+
+      final double totalBon = payment.nominalBayar + payment.sisaBon;
+      expect(totalBon, equals(totalBonAwal));
+
+      final detailText = 'Bayar Rp ${payment.nominalBayar.toInt()} dari total BON Rp ${totalBon.toInt()} (Sisa: Rp ${payment.sisaBon.toInt()})';
+      expect(detailText, contains('Bayar Rp 100000 dari total BON Rp 250000'));
+      expect(detailText, contains('Sisa: Rp 150000'));
+      expect(payment.tanggalPelunasan.year, equals(2026));
+      expect(payment.tanggalPelunasan.month, equals(11));
+      expect(payment.tanggalPelunasan.day, equals(12));
     });
   });
 }

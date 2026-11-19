@@ -349,7 +349,7 @@ class _LoginPageState extends State<LoginPage> {
 
                   const SizedBox(height: 28),
                   Text(
-                    'Kencana Cahaya Amanah • Boneva Kasir v2.0',
+                    'Kencana Cahaya Amanah • Sales Kencana v3.1.0',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 11,

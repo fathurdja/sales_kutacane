@@ -12,9 +12,8 @@ import 'package:kasir_kutacane/pages/stock_input_page.dart';
 import 'package:kasir_kutacane/services/auth_service.dart';
 import 'package:kasir_kutacane/services/customer_api_service.dart';
 import 'package:kasir_kutacane/services/offline_sync_service.dart';
-import 'package:kasir_kutacane/services/pdf_invoice_service.dart';
 import 'package:kasir_kutacane/services/pelunasan_history_service.dart';
-import 'package:kasir_kutacane/services/printerBluetooth.dart';
+import 'package:kasir_kutacane/services/print.dart';
 import 'package:kasir_kutacane/services/stock_api_service.dart';
 import 'package:kasir_kutacane/services/supabase_sync_service.dart';
 import 'package:kasir_kutacane/theme/app_theme.dart';
@@ -1065,11 +1064,38 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
     );
 
     try {
-      final destination = await _saveTransactionToApi(newTransaction);
+      await _saveTransactionToApi(newTransaction);
       if (!mounted) return;
 
+      // 1. Langsung picu (trigger) print out struk otomatis via Bluetooth printer
+      try {
+        await TestPrint().printTransaction(newTransaction);
+      } catch (printErr) {
+        debugPrint('Auto print exception: $printErr');
+      }
+
+      // 2. Kirim update ke callback onSave
       widget.onSave(newTransaction);
-      _showSuccessDialog(newTransaction, destination);
+
+      // 3. Jika pembuatan transaksi baru, langsung kembali ke Beranda (pop)
+      // agar tidak terjadi simpan transaksi 2 kali akibat salah klik
+      if (widget.transaction == null) {
+        widget.onNavigateTab?.call(0);
+        if (mounted) {
+          Navigator.pop(context, newTransaction);
+        }
+      } else {
+        // Mode edit: berikan notifikasi sukses & pop kembali ke halaman detail
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Perubahan nota berhasil disimpan!'),
+              backgroundColor: AppColors.success,
+            ),
+          );
+          Navigator.pop(context, newTransaction);
+        }
+      }
     } on StockQuotaException catch (sqe) {
       if (!mounted) return;
       _showStockQuotaWarning(sqe.message);
@@ -1158,234 +1184,6 @@ class _TransactionInputPageState extends State<TransactionInputPage> {
           ),
         ],
       ),
-    );
-  }
-
-  void _resetForm() {
-    _customerNameController.clear();
-    _alamatCustomer.clear();
-    for (final item in _items) {
-      item.dispose();
-    }
-    setState(() {
-      _items.clear();
-      _items.add(TransactionItem());
-      _selectedDate = DateTime.now();
-      _paymentStatus = 'LUNAS';
-    });
-    _generateTransactionId();
-  }
-
-  void _showSuccessDialog(Transaction transaction, SaveDestination destination) {
-    final currencyFormat = NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ');
-
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      enableDrag: false,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    color: destination == SaveDestination.offlineLocal
-                        ? Colors.amber.shade100
-                        : AppColors.lunasBg,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    destination == SaveDestination.offlineLocal
-                        ? Icons.cloud_off_rounded
-                        : Icons.check_circle_rounded,
-                    color: destination == SaveDestination.offlineLocal
-                        ? Colors.amber.shade900
-                        : AppColors.lunas,
-                    size: 38,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  destination == SaveDestination.offlineLocal
-                      ? 'Nota Disimpan Secara Offline!'
-                      : 'Nota Berhasil Disimpan!',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '${transaction.id_transaksi} • ${transaction.customerName}',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  currencyFormat.format(transaction.total),
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.primary,
-                  ),
-                ),
-                if (destination == SaveDestination.offlineLocal) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade50,
-                      border: Border.all(color: Colors.amber.shade400),
-                      borderRadius: BorderRadius.circular(100),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.offline_pin_rounded,
-                            size: 16, color: Colors.amber.shade900),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Tersimpan di Memori HP (Mode Offline)',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.amber.shade900,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Server offline/downtime. Nota tetap aman tersimpan di HP & siap disinkronkan saat server kembali online.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ] else if (destination == SaveDestination.supabaseBackup) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.backupBg,
-                      borderRadius: BorderRadius.circular(100),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.cloud_done, size: 14, color: AppColors.backup),
-                        SizedBox(width: 6),
-                        Text(
-                          'Tersimpan di Server Cadangan (Supabase)',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.backup,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                // Tombol Aksi: Cetak Struk & Kirim PDF
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppRadius.button),
-                          ),
-                        ),
-                        icon: const Icon(Icons.print, size: 20),
-                        label: const Text('Cetak Struk'),
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => Printbluetooth.fromTransaction(
-                                transaction: transaction,
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(AppRadius.button),
-                          ),
-                        ),
-                        icon: const Icon(Icons.share, size: 20),
-                        label: const Text('Kirim PDF'),
-                        onPressed: () async {
-                          Navigator.pop(ctx);
-                          await _sharePdfInvoice(transaction);
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: TextButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      if (widget.transaction != null) {
-                        Navigator.pop(context, transaction);
-                      } else {
-                        _resetForm();
-                        widget.onNavigateTab?.call(1);
-                        if (Navigator.canPop(context)) {
-                          Navigator.pop(context, transaction);
-                        }
-                      }
-                    },
-                    child: const Text('Selesai / Kembali'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _sharePdfInvoice(Transaction transaction) async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Menyiapkan faktur PDF resmi...'),
-        duration: Duration(seconds: 1),
-      ),
-    );
-    await PdfInvoiceService.sharePdf(
-      context: context,
-      transaction: transaction,
     );
   }
 

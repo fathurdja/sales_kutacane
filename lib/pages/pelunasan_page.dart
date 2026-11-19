@@ -131,9 +131,20 @@ class _PelunasanPageState extends State<PelunasanPage>
           final paidTrx = payments
               .where((p) => p.idTransaksi == t.id_transaksi)
               .fold<double>(0.0, (sum, p) => sum + p.nominalBayar);
-          if (historyMap.containsKey(t.id_transaksi) || (t.total > 0 && paidTrx >= t.total)) {
+          if (t.total > 0 && paidTrx >= t.total) {
+            // Lunas penuh karena cicilan sudah mencapai total nota
+            t.status = 'BON LUNAS';
             final rec = historyMap[t.id_transaksi];
-            if (t.status.toUpperCase() == 'BON') {
+            t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
+          } else if (paidTrx > 0 && paidTrx < t.total) {
+            // Masih ada sisa piutang: status MUTLAK 'SUDAH DIBAYAR SEBAGIAN' (Tetap di tab Menunggu, tombol lunasi tetap ada!)
+            t.status = 'SUDAH DIBAYAR SEBAGIAN';
+            if (historyMap.containsKey(t.id_transaksi)) {
+              PelunasanHistoryService.removeSettlement(t.id_transaksi);
+            }
+          } else if (historyMap.containsKey(t.id_transaksi)) {
+            final rec = historyMap[t.id_transaksi];
+            if (t.status.toUpperCase() == 'BON' || t.status.toUpperCase() == 'SUDAH DIBAYAR SEBAGIAN') {
               t.status = 'BON LUNAS';
             }
             t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
@@ -180,9 +191,20 @@ class _PelunasanPageState extends State<PelunasanPage>
           final paidTrx = payments
               .where((p) => p.idTransaksi == t.id_transaksi)
               .fold<double>(0.0, (sum, p) => sum + p.nominalBayar);
-          if (historyMap.containsKey(t.id_transaksi) || (t.total > 0 && paidTrx >= t.total)) {
+          if (t.total > 0 && paidTrx >= t.total) {
+            // Lunas penuh karena cicilan sudah mencapai total nota
+            t.status = 'BON LUNAS';
             final rec = historyMap[t.id_transaksi];
-            if (t.status.toUpperCase() == 'BON') {
+            t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
+          } else if (paidTrx > 0 && paidTrx < t.total) {
+            // Masih ada sisa piutang: status MUTLAK 'SUDAH DIBAYAR SEBAGIAN' (Tetap di tab Menunggu, tombol lunasi tetap ada!)
+            t.status = 'SUDAH DIBAYAR SEBAGIAN';
+            if (historyMap.containsKey(t.id_transaksi)) {
+              PelunasanHistoryService.removeSettlement(t.id_transaksi);
+            }
+          } else if (historyMap.containsKey(t.id_transaksi)) {
+            final rec = historyMap[t.id_transaksi];
+            if (t.status.toUpperCase() == 'BON' || t.status.toUpperCase() == 'SUDAH DIBAYAR SEBAGIAN') {
               t.status = 'BON LUNAS';
             }
             t.tanggalPelunasan = rec?.tanggalPelunasan ?? DateTime.now();
@@ -470,10 +492,44 @@ class _PelunasanPageState extends State<PelunasanPage>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Sudah Pernah Dicicil:', style: TextStyle(fontSize: 12, color: AppColors.lunas)),
-                              Text('+${currencyFormat.format(group.totalTerbayar)}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lunas)),
+                              const Text('Status Piutang:', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.shade100,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  'SUDAH DIBAYAR SEBAGIAN',
+                                  style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: Colors.orange.shade900),
+                                ),
+                              ),
                             ],
                           ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Sudah Pernah Dicicil:', style: TextStyle(fontSize: 12, color: AppColors.lunas)),
+                              Text(
+                                '${currencyFormat.format(group.totalTerbayar)} dari ${currencyFormat.format(group.totalOriginalBon)}',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lunas),
+                              ),
+                            ],
+                          ),
+                          if (group.lastPaymentDate != null) ...[
+                            const SizedBox(height: 4),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Tgl Cicilan Terakhir:', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                                Text(
+                                  DateFormat('dd MMM yyyy').format(group.lastPaymentDate!),
+                                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                         const SizedBox(height: 6),
                         Row(
@@ -779,7 +835,7 @@ class _PelunasanPageState extends State<PelunasanPage>
           remToAllocate -= sisaTrx;
           await _executeSingleTrxSettlement(trx, tanggalPelunasan);
         } else {
-          // Nota ini tertutup sebagian
+          // Nota ini tertutup sebagian (masih ada sisa piutang: status SUDAH DIBAYAR SEBAGIAN)
           await PelunasanHistoryService.recordPayment(
             customerName: trx.customerName,
             idTransaksi: trx.id_transaksi,
@@ -789,6 +845,9 @@ class _PelunasanPageState extends State<PelunasanPage>
             catatan: 'Cicilan untuk nota ${trx.id_transaksi}',
             isLunas: false,
           );
+          setState(() {
+            trx.status = 'SUDAH DIBAYAR SEBAGIAN';
+          });
           remToAllocate = 0;
         }
       }
@@ -862,6 +921,10 @@ class _PelunasanPageState extends State<PelunasanPage>
         .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
         .fold(0.0, (sum, p) => sum + p.nominalBayar);
     final double sisaTrx = (trx.total - paidForTrx).clamp(0.0, trx.total);
+    final trxPayments = _allPayments
+        .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
+        .toList()
+      ..sort((a, b) => b.tanggalPelunasan.compareTo(a.tanggalPelunasan));
 
     DateTime selectedDate = DateTime.now();
     bool isSubmitting = false;
@@ -918,12 +981,16 @@ class _PelunasanPageState extends State<PelunasanPage>
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: (isQris ? AppColors.qris : AppColors.lunas).withOpacity(0.12),
+                          color: (isQris ? AppColors.qris : (paidForTrx > 0 ? Colors.orange : AppColors.lunas)).withOpacity(0.12),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
-                          isQris ? Icons.qr_code_2_rounded : Icons.task_alt_rounded,
-                          color: isQris ? AppColors.qris : AppColors.lunas,
+                          isQris
+                              ? Icons.qr_code_2_rounded
+                              : (paidForTrx > 0 ? Icons.payments_rounded : Icons.task_alt_rounded),
+                          color: isQris
+                              ? AppColors.qris
+                              : (paidForTrx > 0 ? Colors.orange.shade800 : AppColors.lunas),
                           size: 26,
                         ),
                       ),
@@ -933,7 +1000,9 @@ class _PelunasanPageState extends State<PelunasanPage>
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              isQris ? 'Verifikasi Pembayaran QRIS' : 'Pelunasan Transaksi Bon',
+                              isQris
+                                  ? 'Verifikasi Pembayaran QRIS / TRANSFER'
+                                  : (paidForTrx > 0 ? 'Pembayaran Cicilan BON' : 'Pelunasan Transaksi Bon'),
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
@@ -964,6 +1033,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                       borderRadius: BorderRadius.circular(AppRadius.card),
                     ),
                     child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -984,7 +1054,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(isQris ? 'Nominal QRIS:' : 'Total Tagihan Awal:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            Text(isQris ? 'Nominal QRIS / TRANSFER:' : 'Total Tagihan BON Awal:', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                             Text(
                               currencyFormat.format(trx.total),
                               style: TextStyle(
@@ -1000,8 +1070,33 @@ class _PelunasanPageState extends State<PelunasanPage>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
+                              const Text('Status Piutang:', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange.shade100,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  'SUDAH DIBAYAR SEBAGIAN',
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.orange.shade900,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
                               const Text('Sudah Pernah Dicicil:', style: TextStyle(fontSize: 12, color: AppColors.lunas)),
-                              Text('+${currencyFormat.format(paidForTrx)}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lunas)),
+                              Text(
+                                '${currencyFormat.format(paidForTrx)} dari ${currencyFormat.format(trx.total)}',
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lunas),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 6),
@@ -1019,6 +1114,32 @@ class _PelunasanPageState extends State<PelunasanPage>
                               ),
                             ],
                           ),
+                          if (trxPayments.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            const Divider(height: 1),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Riwayat Tanggal Pembayaran (${trxPayments.length}):',
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 4),
+                            ...trxPayments.take(3).map((p) => Padding(
+                              padding: const EdgeInsets.only(bottom: 3),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    '• ${DateFormat('dd-MM-yyyy').format(p.tanggalPelunasan)}: Bayar ${currencyFormat.format(p.nominalBayar)}',
+                                    style: const TextStyle(fontSize: 10.5, color: AppColors.textSecondary),
+                                  ),
+                                  Text(
+                                    'Sisa: ${currencyFormat.format(p.sisaBon)}',
+                                    style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppColors.textSecondary),
+                                  ),
+                                ],
+                              ),
+                            )),
+                          ],
                         ],
                       ],
                     ),
@@ -1148,7 +1269,7 @@ class _PelunasanPageState extends State<PelunasanPage>
 
                   const SizedBox(height: 14),
                   Text(
-                    isQris ? 'Pilih Tanggal Verifikasi Masuk:' : 'Pilih Tanggal Pelunasan:',
+                    isQris ? 'Pilih Tanggal Verifikasi QRIS / TRANSFER:' : 'Pilih Tanggal Pelunasan:',
                     style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 6),
@@ -1161,7 +1282,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         initialDate: selectedDate,
                         firstDate: DateTime(2020),
                         lastDate: DateTime.now().add(const Duration(days: 30)),
-                        helpText: isQris ? 'Pilih Tanggal Verifikasi Dana' : 'Pilih Tanggal Pembayaran/Pelunasan',
+                        helpText: isQris ? 'Pilih Tanggal Verifikasi QRIS / TRANSFER' : 'Pilih Tanggal Pembayaran/Pelunasan',
                       );
                       if (picked != null) {
                         setModalState(() {
@@ -1234,7 +1355,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                           label: Text(isSubmitting
                               ? 'Memproses...'
                               : (isQris
-                                  ? 'Verifikasi Lunas'
+                                  ? 'Verifikasi Lunas (QRIS / TRANSFER)'
                                   : (isFullPayment
                                       ? 'Lunasi Sisa (${currencyFormat.format(sisaTrx)})'
                                       : 'Simpan Cicilan (${currencyFormat.format(enteredAmount)})'))),
@@ -1312,6 +1433,9 @@ class _PelunasanPageState extends State<PelunasanPage>
           catatan: catatan?.isNotEmpty == true ? catatan : 'Cicilan untuk nota ${trx.id_transaksi}',
           isLunas: false,
         );
+        setState(() {
+          trx.status = 'SUDAH DIBAYAR SEBAGIAN';
+        });
       }
 
       // Cetak struk jika dipilih
@@ -1338,7 +1462,7 @@ class _PelunasanPageState extends State<PelunasanPage>
         SnackBar(
           content: Text(
             wasQris
-                ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DIVERIFIKASI LUNAS!'
+                ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DIVERIFIKASI LUNAS (QRIS / TRANSFER)!'
                 : (isCleared
                     ? 'Nota ${trx.id_transaksi} (${trx.customerName}) BERHASIL DILUNASI!'
                     : 'Pembayaran sebagian ${currencyFormat.format(actualPay)} untuk nota ${trx.id_transaksi} berhasil dicatat! Sisa: ${currencyFormat.format(sisaSetelahBayar)}'),
@@ -1569,64 +1693,92 @@ class _PelunasanPageState extends State<PelunasanPage>
                     )
                   : ListView.separated(
                       itemCount: payments.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
                       itemBuilder: (ctx, i) {
                         final p = payments[i];
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          child: Row(
+                        final totalBonAwal = p.nominalBayar + p.sisaBon;
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppColors.bgSecondary,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.surfaceBorder),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: (p.isLunas ? AppColors.lunas : AppColors.primary).withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(
-                                  p.isLunas ? Icons.check_circle_outline : Icons.payments_outlined,
-                                  color: p.isLunas ? AppColors.lunas : AppColors.primary,
-                                  size: 20,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      dateFormat.format(p.tanggalPelunasan),
-                                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
-                                    ),
-                                    Text(
-                                      '${p.isLunas ? 'Lunas Penuh' : 'Cicilan'} • Sisa BON: ${currencyFormat.format(p.sisaBon)}',
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: p.isLunas ? AppColors.lunas : AppColors.textSecondary,
-                                        fontWeight: p.isLunas ? FontWeight.bold : FontWeight.normal,
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                                      decoration: BoxDecoration(
+                                        color: (p.isLunas ? AppColors.lunas : Colors.orange.shade800).withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(4),
+                                        border: Border.all(
+                                          color: (p.isLunas ? AppColors.lunas : Colors.orange.shade800).withValues(alpha: 0.3),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        p.isLunas ? 'LUNAS PENUH' : 'SUDAH DIBAYAR SEBAGIAN',
+                                        style: TextStyle(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: p.isLunas ? AppColors.lunas : Colors.orange.shade800,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
-                                    if (p.catatan != null && p.catatan!.isNotEmpty) ...[
-                                      const SizedBox(height: 2),
-                                      Text('Ket: ${p.catatan}', style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic)),
-                                    ],
-                                  ],
-                                ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    dateFormat.format(p.tanggalPelunasan),
+                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
+                                  ),
+                                ],
                               ),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Dibayar ${currencyFormat.format(p.nominalBayar)}',
+                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
                                   Text(
                                     '+${currencyFormat.format(p.nominalBayar)}',
-                                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.lunas),
+                                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: AppColors.lunas),
                                   ),
-                                  IconButton(
-                                    icon: const Icon(Icons.print_outlined, size: 18, color: AppColors.primary),
-                                    tooltip: 'Cetak Bukti',
-                                    onPressed: () {
+                                ],
+                              ),
+                              const SizedBox(height: 2),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Total BON: ${currencyFormat.format(totalBonAwal)} • ${p.isLunas ? 'Lunas' : 'Sisa: ${currencyFormat.format(p.sisaBon)}'}',
+                                      style: TextStyle(
+                                        fontSize: 10.5,
+                                        color: p.isLunas ? AppColors.lunas : Colors.orange.shade900,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  InkWell(
+                                    onTap: () {
                                       _printPaymentReceipt(
                                         customerName: p.customerName,
                                         idTransaksi: p.idTransaksi,
-                                        totalBonAwal: p.nominalBayar + p.sisaBon,
+                                        totalBonAwal: totalBonAwal,
                                         nominalBayar: p.nominalBayar,
                                         sisaBon: p.sisaBon,
                                         tanggalPelunasan: p.tanggalPelunasan,
@@ -1634,9 +1786,24 @@ class _PelunasanPageState extends State<PelunasanPage>
                                         isLunas: p.isLunas,
                                       );
                                     },
+                                    child: const Padding(
+                                      padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.print_outlined, size: 14, color: AppColors.primary),
+                                          SizedBox(width: 4),
+                                          Text('Struk', style: TextStyle(fontSize: 11, color: AppColors.primary, fontWeight: FontWeight.w600)),
+                                        ],
+                                      ),
+                                    ),
                                   ),
                                 ],
                               ),
+                              if (p.catatan != null && p.catatan!.isNotEmpty) ...[
+                                const SizedBox(height: 2),
+                                Text('Ket: ${p.catatan}', style: const TextStyle(fontSize: 10, fontStyle: FontStyle.italic, color: AppColors.textSecondary)),
+                              ],
                             ],
                           ),
                         );
@@ -1771,7 +1938,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         ),
                         const SizedBox(width: 6),
                         ChoiceChip(
-                          label: Text('QRIS (${_allTransactions.where((t) => t.isQris).length})'),
+                          label: Text('QRIS / TRANSFER (${_allTransactions.where((t) => t.isQris).length})'),
                           selected: _paymentFilter == 'QRIS',
                           selectedColor: AppColors.qris.withOpacity(0.22),
                           onSelected: (_) => setState(() => _paymentFilter = 'QRIS'),
@@ -1869,7 +2036,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Sisa BON: ${currencyFormat.format(_totalPiutangBon)} • QRIS: ${currencyFormat.format(_totalPendingQris)}',
+                              'Sisa BON: ${currencyFormat.format(_totalPiutangBon)} • QRIS / TRANSFER: ${currencyFormat.format(_totalPendingQris)}',
                               style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 11),
                             ),
                           ],
@@ -2061,79 +2228,111 @@ class _PelunasanPageState extends State<PelunasanPage>
     final dateFormat = DateFormat('dd MMM yyyy');
     return Card(
       elevation: 2,
+      margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 1. Header Pelanggan
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 CircleAvatar(
-                  backgroundColor: AppColors.bon.withOpacity(0.12),
-                  child: const Icon(Icons.storefront_rounded, color: AppColors.bon),
+                  radius: 18,
+                  backgroundColor: AppColors.bon.withValues(alpha: 0.12),
+                  child: const Icon(Icons.storefront_rounded, size: 20, color: AppColors.bon),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         g.customerName,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
+                      const SizedBox(height: 2),
                       Text(
                         g.alamat.isNotEmpty ? g.alamat : 'Gorontalo',
-                        style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                        style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(width: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: AppColors.bonBg,
+                    color: g.totalTerbayar > 0 ? const Color(0xFFFFF4E6) : AppColors.bonBg,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppColors.bon.withOpacity(0.3)),
+                    border: Border.all(
+                      color: g.totalTerbayar > 0 ? Colors.orange.shade300 : AppColors.bon.withValues(alpha: 0.3),
+                    ),
                   ),
                   child: Text(
-                    '${g.transactions.length} NOTA BON',
-                    style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: AppColors.bon),
+                    g.totalTerbayar > 0 ? 'SUDAH DICICIL' : '${g.transactions.length} NOTA BON',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: g.totalTerbayar > 0 ? Colors.orange.shade900 : AppColors.bon,
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
+
+            // 2. Box Ringkasan Keuangan (Simetris & Rapi)
             Container(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: AppColors.bgSecondary,
                 borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.surfaceBorder),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              child: Column(
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Total BON Awal', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                      Text(currencyFormat.format(g.totalOriginalBon), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                      const Text(
+                        'Sisa Piutang BON',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.bon),
+                      ),
+                      Text(
+                        currencyFormat.format(g.sisaBon),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.bon,
+                        ),
+                      ),
                     ],
                   ),
-                  if (g.totalTerbayar > 0) ...[
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        const Text('Sudah Dicicil', style: TextStyle(fontSize: 11, color: AppColors.lunas)),
-                        Text('+${currencyFormat.format(g.totalTerbayar)}', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppColors.lunas)),
-                      ],
-                    ),
-                  ],
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                  const SizedBox(height: 6),
+                  const Divider(height: 1),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Sisa Tagihan BON', style: TextStyle(fontSize: 11, color: AppColors.bon, fontWeight: FontWeight.bold)),
-                      Text(currencyFormat.format(g.sisaBon), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppColors.bon)),
+                      Expanded(
+                        child: Text(
+                          'Total Bon Awal: ${currencyFormat.format(g.totalOriginalBon)}',
+                          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (g.totalTerbayar > 0)
+                        Text(
+                          'Tercicil: ${currencyFormat.format(g.totalTerbayar)}',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.lunas),
+                        ),
                     ],
                   ),
                 ],
@@ -2145,16 +2344,20 @@ class _PelunasanPageState extends State<PelunasanPage>
                 children: [
                   const Icon(Icons.history_rounded, size: 13, color: AppColors.textSecondary),
                   const SizedBox(width: 4),
-                  Text(
-                    'Pembayaran terakhir: ${dateFormat.format(g.lastPaymentDate!)}',
-                    style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                  Expanded(
+                    child: Text(
+                      'Pembayaran terakhir: ${dateFormat.format(g.lastPaymentDate!)}',
+                      style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
             ],
-            const Divider(height: 18),
+            const SizedBox(height: 12),
+
+            // 3. Tombol Aksi Bawah
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 if (g.payments.isNotEmpty)
                   OutlinedButton.icon(
@@ -2167,7 +2370,9 @@ class _PelunasanPageState extends State<PelunasanPage>
                     onPressed: () => _showPaymentHistorySheet(g.customerName),
                   )
                 else
-                  Text('${g.transactions.length} Nota Aktif', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                  Text('${g.transactions.length} Nota Aktif',
+                      style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary)),
+                const Spacer(),
                 if (_isAdmin)
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
@@ -2175,6 +2380,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                       visualDensity: VisualDensity.compact,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                     icon: const Icon(Icons.payments_outlined, size: 16),
                     label: const Text('Bayar / Lunasi', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
@@ -2205,7 +2411,7 @@ class _PelunasanPageState extends State<PelunasanPage>
             ),
             const SizedBox(height: 4),
             const Text(
-              'Semua piutang & QRIS telah terverifikasi lunas atau belum ada nota.',
+              'Semua piutang & QRIS / TRANSFER telah terverifikasi lunas atau belum ada nota.',
               style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
             ),
           ],
@@ -2218,14 +2424,18 @@ class _PelunasanPageState extends State<PelunasanPage>
       child: ListView.separated(
         padding: const EdgeInsets.all(AppSpacing.screenMargin),
         itemCount: list.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 12),
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
         itemBuilder: (ctx, idx) {
           final trx = list[idx];
           final paidForTrx = _allPayments
               .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
               .fold(0.0, (sum, p) => sum + p.nominalBayar);
           final sisaTrx = (trx.total - paidForTrx).clamp(0.0, trx.total);
-          final isCicil = !trx.isQris && paidForTrx > 0;
+          final isCicil = !trx.isQris && paidForTrx > 0 && sisaTrx > 0;
+          final trxPayments = _allPayments
+              .where((p) => p.idTransaksi != null && p.idTransaksi == trx.id_transaksi)
+              .toList()
+            ..sort((a, b) => b.tanggalPelunasan.compareTo(a.tanggalPelunasan));
 
           return Card(
             elevation: 1.5,
@@ -2235,35 +2445,41 @@ class _PelunasanPageState extends State<PelunasanPage>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // 1. Header: Badge Status & Tanggal Nota
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: trx.isQris
-                              ? AppColors.qrisBg
-                              : (isCicil ? Colors.orange.shade50 : AppColors.bonBg),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
                             color: trx.isQris
-                                ? AppColors.qris.withOpacity(0.3)
-                                : (isCicil ? Colors.orange.shade300 : AppColors.bon.withOpacity(0.3)),
+                                ? AppColors.qrisBg
+                                : (isCicil ? const Color(0xFFFFF4E6) : AppColors.bonBg),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: trx.isQris
+                                  ? AppColors.qris.withValues(alpha: 0.3)
+                                  : (isCicil ? Colors.orange.shade300 : AppColors.bon.withValues(alpha: 0.3)),
+                            ),
                           ),
-                        ),
-                        child: Text(
-                          trx.isQris
-                              ? 'MENUNGGU VERIFIKASI (QRIS)'
-                              : (isCicil ? 'DICICIL (SISA: ${currencyFormat.format(sisaTrx)})' : 'BELUM LUNAS (BON)'),
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w800,
-                            color: trx.isQris
-                                ? AppColors.qris
-                                : (isCicil ? Colors.orange.shade900 : AppColors.bon),
+                          child: Text(
+                            trx.isQris
+                                ? 'VERIFIKASI QRIS / TRANSFER'
+                                : (isCicil ? 'SUDAH DIBAYAR SEBAGIAN' : 'BELUM LUNAS (BON)'),
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: trx.isQris
+                                  ? AppColors.qris
+                                  : (isCicil ? Colors.orange.shade900 : AppColors.bon),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
                         dateFormat.format(trx.date),
                         style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
@@ -2271,97 +2487,156 @@ class _PelunasanPageState extends State<PelunasanPage>
                     ],
                   ),
                   const SizedBox(height: 8),
+
+                  // 2. Info Pelanggan & Nota
                   Text(
                     trx.customerName,
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 15,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textPrimary,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   if (trx.alamat.isNotEmpty) ...[
                     const SizedBox(height: 2),
                     Text(
                       trx.alamat,
-                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                      style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 3),
                   Text(
                     'No. Nota: ${trx.id_transaksi}',
                     style: const TextStyle(fontSize: 11.5, color: AppColors.primary, fontWeight: FontWeight.w600),
                   ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            trx.isQris ? 'Nominal QRIS' : (isCicil ? 'Sisa Piutang' : 'Total Piutang'),
-                            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
-                          ),
-                          Text(
-                            currencyFormat.format(isCicil ? sisaTrx : trx.total),
-                            style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w900,
-                              color: trx.isQris ? AppColors.qris : AppColors.bon,
-                            ),
-                          ),
-                          if (isCicil)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: Text(
-                                'Awal: ${currencyFormat.format(trx.total)} • Masuk: ${currencyFormat.format(paidForTrx)}',
-                                style: const TextStyle(fontSize: 10.5, color: AppColors.textSecondary),
+                  const SizedBox(height: 10),
+
+                  // 3. Box Nominal Keuangan (Simetris & Bersih)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSecondary,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.surfaceBorder),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              trx.isQris ? 'Nominal QRIS / TRANSFER' : (isCicil ? 'Sisa Piutang BON' : 'Total Piutang BON'),
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: trx.isQris ? AppColors.qris : AppColors.bon,
                               ),
                             ),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          OutlinedButton(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                              visualDensity: VisualDensity.compact,
+                            Text(
+                              currencyFormat.format(isCicil ? sisaTrx : trx.total),
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                                color: trx.isQris ? AppColors.qris : AppColors.bon,
+                              ),
                             ),
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => TransactionDetailPage(transaction: trx),
+                          ],
+                        ),
+                        if (isCicil) ...[
+                          const SizedBox(height: 6),
+                          const Divider(height: 1),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Total Bon: ${currencyFormat.format(trx.total)}',
+                                  style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              );
-                            },
-                            child: const Text('Detail', style: TextStyle(fontSize: 12)),
+                              ),
+                              Text(
+                                'Tercicil: ${currencyFormat.format(paidForTrx)}',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.lunas),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          if (_isAdmin)
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: trx.isQris
-                                    ? AppColors.qris
-                                    : (isCicil ? AppColors.primary : AppColors.lunas),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              icon: Icon(
-                                trx.isQris
-                                    ? Icons.verified_outlined
-                                    : (isCicil ? Icons.payments_outlined : Icons.check_circle_outline),
-                                size: 16,
-                              ),
-                              label: Text(
-                                trx.isQris ? 'Verifikasi' : (isCicil ? 'Cicil / Lunasi' : 'Lunasi'),
-                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-                              ),
-                              onPressed: () => _showPelunasanDialog(trx),
+                          if (trxPayments.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Row(
+                              children: [
+                                const Icon(Icons.access_time, size: 11, color: AppColors.textSecondary),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Dicicil pada: ${DateFormat('dd MMM yyyy').format(trxPayments.first.tanggalPelunasan)}',
+                                  style: const TextStyle(fontSize: 10.5, color: AppColors.textSecondary),
+                                ),
+                              ],
                             ),
+                          ],
                         ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // 4. Tombol Aksi Simetris (Detail & Cicil/Lunasi)
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 4,
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            visualDensity: VisualDensity.compact,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => TransactionDetailPage(transaction: trx),
+                              ),
+                            ).then((_) => fetchTransactions());
+                          },
+                          child: const Text('Detail Nota', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                        ),
                       ),
+                      if (_isAdmin) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 6,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: trx.isQris
+                                  ? AppColors.qris
+                                  : (isCicil ? AppColors.primary : AppColors.lunas),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 9),
+                              visualDensity: VisualDensity.compact,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            icon: Icon(
+                              trx.isQris
+                                  ? Icons.verified_outlined
+                                  : (isCicil ? Icons.payments_outlined : Icons.check_circle_outline),
+                              size: 15,
+                            ),
+                            label: Text(
+                              trx.isQris
+                                  ? 'Verifikasi Lunas'
+                                  : (isCicil ? 'Cicil / Lunasi' : 'Lunasi Nota'),
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                            ),
+                            onPressed: () => _showPelunasanDialog(trx),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -2412,12 +2687,16 @@ class _PelunasanPageState extends State<PelunasanPage>
                           color: _historyViewMode == 'NOTA' ? AppColors.primary : AppColors.textSecondary,
                         ),
                         const SizedBox(width: 6),
-                        Text(
-                          'Nota Lunas (${_lunasTransactions.length})',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: _historyViewMode == 'NOTA' ? FontWeight.w700 : FontWeight.w500,
-                            color: _historyViewMode == 'NOTA' ? AppColors.primary : AppColors.textSecondary,
+                        Flexible(
+                          child: Text(
+                            'Nota Lunas (${_lunasTransactions.length})',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: _historyViewMode == 'NOTA' ? FontWeight.w700 : FontWeight.w500,
+                              color: _historyViewMode == 'NOTA' ? AppColors.primary : AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -2447,12 +2726,16 @@ class _PelunasanPageState extends State<PelunasanPage>
                           color: _historyViewMode == 'PAYMENTS' ? AppColors.primary : AppColors.textSecondary,
                         ),
                         const SizedBox(width: 6),
-                        Text(
-                          'Log Pembayaran (${_allPayments.length})',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: _historyViewMode == 'PAYMENTS' ? FontWeight.w700 : FontWeight.w500,
-                            color: _historyViewMode == 'PAYMENTS' ? AppColors.primary : AppColors.textSecondary,
+                        Flexible(
+                          child: Text(
+                            'Log Pembayaran (${_allPayments.length})',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: _historyViewMode == 'PAYMENTS' ? FontWeight.w700 : FontWeight.w500,
+                              color: _historyViewMode == 'PAYMENTS' ? AppColors.primary : AppColors.textSecondary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -2524,7 +2807,7 @@ class _PelunasanPageState extends State<PelunasanPage>
                         decoration: BoxDecoration(
                           color: AppColors.lunasBg,
                           borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: AppColors.lunas.withOpacity(0.3)),
+                          border: Border.all(color: AppColors.lunas.withValues(alpha: 0.3)),
                         ),
                         child: const Row(
                           mainAxisSize: MainAxisSize.min,
@@ -2557,71 +2840,87 @@ class _PelunasanPageState extends State<PelunasanPage>
                   Text(
                     trx.customerName,
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 15,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textPrimary,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   if (trx.alamat.isNotEmpty) ...[
                     const SizedBox(height: 2),
                     Text(
                       trx.alamat,
-                      style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                      style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 3),
                   Text(
                     'No. Nota: ${trx.id_transaksi}',
                     style: const TextStyle(fontSize: 11.5, color: AppColors.primary, fontWeight: FontWeight.w600),
                   ),
-                  const Divider(height: 20),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSecondary,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.surfaceBorder),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Total Pembayaran', style: TextStyle(fontSize: 11.5, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
+                        Text(
+                          currencyFormat.format(trx.total),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.lunas,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Total Pembayaran', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                          Text(
-                            currencyFormat.format(trx.total),
-                            style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w900,
-                              color: AppColors.lunas,
-                            ),
+                      Expanded(
+                        flex: 4,
+                        child: OutlinedButton(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            visualDensity: VisualDensity.compact,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
-                        ],
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => TransactionDetailPage(transaction: trx),
+                              ),
+                            );
+                          },
+                          child: const Text('Detail Nota', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                        ),
                       ),
-                      Row(
-                        children: [
-                          OutlinedButton(
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => TransactionDetailPage(transaction: trx),
-                                ),
-                              );
-                            },
-                            child: const Text('Detail', style: TextStyle(fontSize: 12)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 6,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            visualDensity: VisualDensity.compact,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              visualDensity: VisualDensity.compact,
-                            ),
-                            icon: const Icon(Icons.print, size: 16),
-                            label: const Text('Cetak Struk', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-                            onPressed: () => _autoPrintReceipt(trx),
-                          ),
-                        ],
+                          icon: const Icon(Icons.print, size: 15),
+                          label: const Text('Cetak Struk', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                          onPressed: () => _autoPrintReceipt(trx),
+                        ),
                       ),
                     ],
                   ),
@@ -2648,6 +2947,13 @@ class _PelunasanPageState extends State<PelunasanPage>
               'Belum ada riwayat transaksi pembayaran/cicilan.',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
+            const SizedBox(height: 4),
+            Text(
+              _dateFilterPreset != 'SEMUA' || _searchCtrl.text.isNotEmpty
+                  ? 'Tidak ada log pembayaran yang cocok dengan filter tanggal/pencarian.'
+                  : 'Catatan pembayaran pelunasan dan cicilan akan muncul di sini.',
+              style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
           ],
         ),
       );
@@ -2658,90 +2964,222 @@ class _PelunasanPageState extends State<PelunasanPage>
       child: ListView.separated(
         padding: const EdgeInsets.all(AppSpacing.screenMargin),
         itemCount: payments.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        separatorBuilder: (_, __) => const SizedBox(height: 12),
         itemBuilder: (ctx, idx) {
           final p = payments[idx];
+          final totalBonAwal = p.nominalBayar + p.sisaBon;
+
           return Card(
             elevation: 1.5,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(14),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // 1. Header: Badge Status & Tanggal Pembayaran
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: (p.isLunas ? AppColors.lunas : AppColors.primary).withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          p.isLunas ? 'LUNAS PENUH' : 'PEMBAYARAN SEBAGIAN (CICIL)',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: p.isLunas ? AppColors.lunas : AppColors.primary,
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                          decoration: BoxDecoration(
+                            color: (p.isLunas ? AppColors.lunas : Colors.orange.shade800).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: (p.isLunas ? AppColors.lunas : Colors.orange.shade800).withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                p.isLunas ? Icons.check_circle_outline : Icons.payments_outlined,
+                                size: 12,
+                                color: p.isLunas ? AppColors.lunas : Colors.orange.shade800,
+                              ),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  p.isLunas ? 'LUNAS PENUH' : 'SUDAH DIBAYAR SEBAGIAN',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: p.isLunas ? AppColors.lunas : Colors.orange.shade800,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
+                      const SizedBox(width: 8),
                       Text(
-                        DateFormat('dd-MM-yyyy').format(p.tanggalPelunasan),
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary),
+                        DateFormat('dd MMM yyyy').format(p.tanggalPelunasan),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primary,
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 8),
+
+                  // 2. Info Pelanggan & Nota
                   Text(
                     p.customerName,
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (p.idTransaksi != null) ...[
+                  if (p.idTransaksi != null && p.idTransaksi!.isNotEmpty) ...[
                     const SizedBox(height: 2),
-                    Text('Nota: ${p.idTransaksi}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                    Text(
+                      'No. Nota: ${p.idTransaksi}',
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
                   if (p.catatan != null && p.catatan!.isNotEmpty) ...[
                     const SizedBox(height: 2),
-                    Text('Catatan: ${p.catatan}', style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic)),
+                    Text(
+                      'Catatan: ${p.catatan}',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        color: AppColors.textSecondary,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ],
-                  const Divider(height: 16),
+                  const SizedBox(height: 10),
+
+                  // 3. Financial Summary Box (Anti-Overflow & Simetris)
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSecondary,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.surfaceBorder),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Nominal Pembayaran',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: AppColors.textSecondary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '+${currencyFormat.format(p.nominalBayar)}',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                                color: AppColors.lunas,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        const Divider(height: 1),
+                        const SizedBox(height: 6),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Total BON: ${currencyFormat.format(totalBonAwal)}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.textSecondary,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              p.isLunas ? 'Sisa: Rp 0 (LUNAS)' : 'Sisa BON: ${currencyFormat.format(p.sisaBon)}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: p.isLunas ? AppColors.lunas : Colors.orange.shade900,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // 4. Tombol Aksi Simetris (Cetak Bukti & Lunasi Sisa)
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Sisa BON Setelah Bayar', style: TextStyle(fontSize: 10.5, color: AppColors.textSecondary)),
-                          Text(currencyFormat.format(p.sisaBon), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          Text(
-                            '+${currencyFormat.format(p.nominalBayar)}',
-                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppColors.lunas),
+                      Expanded(
+                        flex: (_isAdmin && !p.isLunas && p.sisaBon > 0) ? 5 : 10,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            visualDensity: VisualDensity.compact,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.print_outlined, size: 18, color: AppColors.primary),
-                            tooltip: 'Cetak Bukti Pembayaran',
-                            onPressed: () {
-                              _printPaymentReceipt(
-                                customerName: p.customerName,
-                                idTransaksi: p.idTransaksi,
-                                totalBonAwal: p.nominalBayar + p.sisaBon,
-                                nominalBayar: p.nominalBayar,
-                                sisaBon: p.sisaBon,
-                                tanggalPelunasan: p.tanggalPelunasan,
-                                catatan: p.catatan,
-                                isLunas: p.isLunas,
-                              );
-                            },
+                          icon: const Icon(Icons.print_outlined, size: 15, color: AppColors.primary),
+                          label: const Text(
+                            'Cetak Bukti',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                           ),
-                        ],
+                          onPressed: () {
+                            _printPaymentReceipt(
+                              customerName: p.customerName,
+                              idTransaksi: p.idTransaksi,
+                              totalBonAwal: totalBonAwal,
+                              nominalBayar: p.nominalBayar,
+                              sisaBon: p.sisaBon,
+                              tanggalPelunasan: p.tanggalPelunasan,
+                              catatan: p.catatan,
+                              isLunas: p.isLunas,
+                            );
+                          },
+                        ),
                       ),
+                      if (_isAdmin && !p.isLunas && p.sisaBon > 0) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 5,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.lunas,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 9),
+                              visualDensity: VisualDensity.compact,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            icon: const Icon(Icons.payments_outlined, size: 15),
+                            label: const Text(
+                              'Lunasi Sisa',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                            ),
+                            onPressed: () => _openPelunasanFromPayment(p),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -2751,5 +3189,24 @@ class _PelunasanPageState extends State<PelunasanPage>
         },
       ),
     );
+  }
+
+  void _openPelunasanFromPayment(PelunasanPayment p) {
+    if (p.idTransaksi != null) {
+      final matches = _allTransactions.where((t) => t.id_transaksi == p.idTransaksi).toList();
+      if (matches.isNotEmpty) {
+        _showPelunasanDialog(matches.first);
+        return;
+      }
+    }
+    final custMatches = _customerBonGroups
+        .where((g) => g.customerName.trim().toLowerCase() == p.customerName.trim().toLowerCase())
+        .toList();
+    if (custMatches.isNotEmpty) {
+      _showPelunasanCustomerDialog(custMatches.first);
+      return;
+    }
+    _tabController.animateTo(0);
+    _searchCtrl.text = p.customerName;
   }
 }

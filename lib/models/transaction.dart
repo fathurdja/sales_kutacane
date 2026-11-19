@@ -31,11 +31,15 @@ class Transaction {
   });
 
   bool get isLunas => status.toUpperCase() == 'LUNAS';
-  bool get isBon => status.toUpperCase() == 'BON';
-  bool get isQris => status.toUpperCase() == 'QRIS';
   bool get isBonLunas =>
       status.toUpperCase() == 'BON LUNAS' ||
       status.toUpperCase() == 'BON_LUNAS';
+  bool get isDicicil =>
+      status.toUpperCase() == 'SUDAH DIBAYAR SEBAGIAN' ||
+      status.toUpperCase() == 'DICICIL' ||
+      status.toUpperCase() == 'SEBAGIAN';
+  bool get isBon => status.toUpperCase() == 'BON' || isDicicil;
+  bool get isQris => status.toUpperCase() == 'QRIS';
   bool get isSettled => isLunas || isBonLunas;
 
   /// Parse string tanggal dari server secara presisi tanpa pergeseran timezone (UTC drift)

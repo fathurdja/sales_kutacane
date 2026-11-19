@@ -1535,7 +1535,7 @@ class _MorePageState extends State<MorePage> {
             Text(
               'Kencana Cahaya Amanah\n'
               'JL. Kenangan No. 183 Gorontalo\n\n'
-              'Versi 3.0.0',
+              'Versi 3.1.0 (Build 4)',
               style: TextStyle(
                 fontSize: 14,
                 color: AppColors.textSecondary,
